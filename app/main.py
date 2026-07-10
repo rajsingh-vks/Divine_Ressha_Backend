@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.database import connect_to_mongo
-from app.routes import auth, health, permissions, roles, users
+from app.routes import auth, cart, health, permissions, roles, users, wishlist
 
 
 settings = get_settings()
@@ -42,6 +42,8 @@ app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(roles.router)
 app.include_router(permissions.router)
+app.include_router(wishlist.router)
+app.include_router(cart.router)
 
 
 @app.get("/", tags=["Root"])

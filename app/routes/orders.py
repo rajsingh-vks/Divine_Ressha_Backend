@@ -1,0 +1,275 @@
+from datetime import UTC, datetime
+from random import randint
+
+from bson import ObjectId
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
+
+from app.dependencies import get_current_user, require_role
+from app.schemas.orders import (
+    AddressSnapshot,
+    OrderCancelRequest,
+    OrderCreate,
+    OrderItemOut,
+    OrderOut,
+    OrderStatusHistory,
+    OrderStatusUpdate,
+)
+
+
+router = APIRouter(prefix="/orders", tags=["Orders"])
+
+ALLOWED_ORDER_STATUSES = {"placed", "confirmed", "processing", "shipped", "delivered", "cancelled"}
+
+
+def _to_object_id(value: str) -> ObjectId:
+    try:
+        return ObjectId(value)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid id format.") from exc
+
+
+def _new_order_number() -> str:
+    date_part = datetime.now(UTC).strftime("%Y%m%d")
+    return f"DR-{date_part}-{randint(100000, 999999)}"
+
+
+def _serialize_order(document: dict) -> OrderOut:
+    items = [OrderItemOut(**item) for item in document.get("items", [])]
+    history = [OrderStatusHistory(**item) for item in document.get("status_history", [])]
+    return OrderOut(
+        id=str(document["_id"]),
+        order_number=document["order_number"],
+        user_id=str(document["user_id"]),
+        status=document["status"],
+        items=items,
+        shipping_address=AddressSnapshot(**document["shipping_address"]),
+        total_items=document.get("total_items", 0),
+        subtotal=float(document.get("subtotal", 0)),
+        notes=document.get("notes"),
+        cancel_reason=document.get("cancel_reason"),
+        cancelled_at=document.get("cancelled_at"),
+        status_history=history,
+        created_at=document["created_at"],
+        updated_at=document["updated_at"],
+    )
+
+
+@router.get("", response_model=list[OrderOut])
+async def list_orders(
+    request: Request,
+    current_user=Depends(get_current_user),
+    limit: int = Query(default=20, ge=1, le=100),
+    skip: int = Query(default=0, ge=0),
+):
+    query: dict = {}
+    if current_user.get("role") != "admin":
+        query["user_id"] = current_user["_id"]
+
+    cursor = request.app.state.mongo_db.orders.find(query).sort("created_at", -1).skip(skip).limit(limit)
+    items = await cursor.to_list(length=limit)
+    return [_serialize_order(item) for item in items]
+
+
+@router.get("/user/history", response_model=list[OrderOut])
+async def my_order_history(
+    request: Request,
+    current_user=Depends(get_current_user),
+    limit: int = Query(default=20, ge=1, le=100),
+    skip: int = Query(default=0, ge=0),
+):
+    cursor = (
+        request.app.state.mongo_db.orders.find({"user_id": current_user["_id"]})
+        .sort("created_at", -1)
+        .skip(skip)
+        .limit(limit)
+    )
+    items = await cursor.to_list(length=limit)
+    return [_serialize_order(item) for item in items]
+
+
+@router.get("/{order_id}", response_model=OrderOut)
+async def get_order(request: Request, order_id: str = Path(...), current_user=Depends(get_current_user)):
+    order = await request.app.state.mongo_db.orders.find_one({"_id": _to_object_id(order_id)})
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found.")
+
+    if current_user.get("role") != "admin" and order["user_id"] != current_user["_id"]:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found.")
+
+    return _serialize_order(order)
+
+
+@router.post("", response_model=OrderOut, status_code=status.HTTP_201_CREATED)
+async def place_order(payload: OrderCreate, request: Request, current_user=Depends(get_current_user)):
+    db = request.app.state.mongo_db
+    user_id = current_user["_id"]
+
+    address = await db.addresses.find_one({"_id": _to_object_id(payload.address_id), "user_id": user_id})
+    if not address:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Delivery address not found.")
+
+    cart_items = await db.cart.find({"user_id": user_id}).to_list(length=500)
+    if not cart_items:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cart is empty.")
+
+    order_items: list[dict] = []
+    subtotal = 0.0
+    total_items = 0
+
+    for item in cart_items:
+        product = await db.products.find_one({"_id": item["product_id"]})
+        if not product:
+            continue
+
+        unit_price = product.get("price")
+        quantity = int(item.get("quantity", 1))
+        line_total = float(unit_price) * quantity if isinstance(unit_price, (int, float)) else None
+
+        order_items.append(
+            {
+                "product_id": str(product["_id"]),
+                "name": product.get("name", "Unknown Product"),
+                "image_url": product.get("image_url"),
+                "unit_price": float(unit_price) if isinstance(unit_price, (int, float)) else None,
+                "quantity": quantity,
+                "line_total": round(line_total, 2) if line_total is not None else None,
+            }
+        )
+        total_items += quantity
+        if line_total is not None:
+            subtotal += line_total
+
+    if not order_items:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No valid products found in cart.",
+        )
+
+    now = datetime.now(UTC)
+    shipping_snapshot = {
+        "full_name": address["full_name"],
+        "phone": address["phone"],
+        "line1": address["line1"],
+        "line2": address.get("line2"),
+        "city": address["city"],
+        "state": address["state"],
+        "postal_code": address["postal_code"],
+        "country": address["country"],
+        "address_type": address.get("address_type", "home"),
+    }
+
+    order_doc = {
+        "user_id": user_id,
+        "order_number": _new_order_number(),
+        "status": "placed",
+        "items": order_items,
+        "shipping_address": shipping_snapshot,
+        "address_id": address["_id"],
+        "total_items": total_items,
+        "subtotal": round(subtotal, 2),
+        "notes": payload.notes.strip() if payload.notes else None,
+        "cancel_reason": None,
+        "cancelled_at": None,
+        "status_history": [
+            {
+                "status": "placed",
+                "note": "Order placed successfully.",
+                "changed_at": now,
+                "changed_by": str(user_id),
+            }
+        ],
+        "created_at": now,
+        "updated_at": now,
+    }
+    result = await db.orders.insert_one(order_doc)
+
+    await db.cart.delete_many({"user_id": user_id})
+    created = await db.orders.find_one({"_id": result.inserted_id})
+    return _serialize_order(created)
+
+
+@router.patch("/{order_id}/status", response_model=OrderOut)
+async def update_order_status(
+    payload: OrderStatusUpdate,
+    request: Request,
+    order_id: str = Path(...),
+    current_admin=Depends(require_role("admin")),
+):
+    normalized = payload.status.strip().lower()
+    if normalized not in ALLOWED_ORDER_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid status. Allowed: {sorted(ALLOWED_ORDER_STATUSES)}",
+        )
+
+    db = request.app.state.mongo_db
+    order_obj_id = _to_object_id(order_id)
+    order = await db.orders.find_one({"_id": order_obj_id})
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found.")
+
+    now = datetime.now(UTC)
+    await db.orders.update_one(
+        {"_id": order_obj_id},
+        {
+            "$set": {
+                "status": normalized,
+                "updated_at": now,
+                "cancelled_at": now if normalized == "cancelled" else order.get("cancelled_at"),
+            },
+            "$push": {
+                "status_history": {
+                    "status": normalized,
+                    "note": "Status updated by admin.",
+                    "changed_at": now,
+                    "changed_by": str(current_admin["_id"]),
+                }
+            },
+        },
+    )
+
+    updated = await db.orders.find_one({"_id": order_obj_id})
+    return _serialize_order(updated)
+
+
+@router.patch("/{order_id}/cancel", response_model=OrderOut)
+async def cancel_order(
+    request: Request,
+    payload: OrderCancelRequest,
+    order_id: str = Path(...),
+    current_user=Depends(get_current_user),
+):
+    db = request.app.state.mongo_db
+    order_obj_id = _to_object_id(order_id)
+    order = await db.orders.find_one({"_id": order_obj_id})
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found.")
+
+    if current_user.get("role") != "admin" and order["user_id"] != current_user["_id"]:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found.")
+
+    if order.get("status") in {"delivered", "cancelled"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Order cannot be cancelled.")
+
+    now = datetime.now(UTC)
+    await db.orders.update_one(
+        {"_id": order_obj_id},
+        {
+            "$set": {
+                "status": "cancelled",
+                "cancel_reason": payload.reason.strip() if payload.reason else None,
+                "cancelled_at": now,
+                "updated_at": now,
+            },
+            "$push": {
+                "status_history": {
+                    "status": "cancelled",
+                    "note": payload.reason.strip() if payload.reason else "Order cancelled.",
+                    "changed_at": now,
+                    "changed_by": str(current_user["_id"]),
+                }
+            },
+        },
+    )
+    updated = await db.orders.find_one({"_id": order_obj_id})
+    return _serialize_order(updated)

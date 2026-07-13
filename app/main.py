@@ -1,11 +1,13 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
 from app.database import connect_to_mongo
-from app.routes import auth, cart, health, permissions, roles, users, wishlist
+from app.routes import auth, cart, health, permissions, products, roles, users, wishlist
 
 
 settings = get_settings()
@@ -37,6 +39,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+media_dir = Path(__file__).resolve().parents[1] / "media"
+media_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/media", StaticFiles(directory=media_dir), name="media")
+
 app.include_router(health.router)
 app.include_router(auth.router)
 app.include_router(users.router)
@@ -44,6 +50,7 @@ app.include_router(roles.router)
 app.include_router(permissions.router)
 app.include_router(wishlist.router)
 app.include_router(cart.router)
+app.include_router(products.router)
 
 
 @app.get("/", tags=["Root"])

@@ -132,6 +132,29 @@ async def test_list_products_by_status(client, test_db):
 
 
 @pytest.mark.asyncio
+async def test_list_products_missing_local_image_returns_null(client, test_db):
+    now = datetime.now(UTC)
+    await test_db.products.insert_one(
+        {
+            "name": "Broken Image Product",
+            "category": "Air Fresheners",
+            "price": 10,
+            "stock": 5,
+            "status": "Active",
+            "image_url": "/media/products/not-found/missing.jpg",
+            "created_at": now,
+            "updated_at": now,
+        }
+    )
+
+    response = await client.get("/products")
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload) == 1
+    assert payload[0]["image_url"] is None
+
+
+@pytest.mark.asyncio
 async def test_update_product_as_admin(client, admin_token):
     create_resp = await client.post(
         "/products",

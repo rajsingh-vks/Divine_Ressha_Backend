@@ -1,6 +1,5 @@
 from datetime import UTC, datetime
 from pathlib import Path
-import shutil
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -10,10 +9,12 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Reques
 from app.config import get_settings
 from app.dependencies import require_role
 from app.schemas.products import ProductOut
+from app.services.storage import ProductImageStorage
 
 
 router = APIRouter(prefix="/products", tags=["Products"])
 settings = get_settings()
+storage = ProductImageStorage(settings=settings, project_root=Path(__file__).resolve().parents[2])
 
 ALLOWED_STATUSES = {"Active", "Draft", "Archived"}
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
@@ -58,6 +59,8 @@ def _extract_relative_media_path(raw_path: str) -> str | None:
 
 
 def _media_file_exists(relative_path: str) -> bool:
+    if settings.media_backend == "s3":
+        return True
     return (_products_media_dir().parent / relative_path).exists()
 
 
@@ -139,19 +142,16 @@ async def _save_uploaded_image(product_id: ObjectId, image: UploadFile) -> str:
 
     extension = Path(image.filename).suffix.lower() or ".jpg"
     filename = f"{uuid4().hex}{extension}"
-    product_dir = _products_media_dir() / str(product_id)
-    product_dir.mkdir(parents=True, exist_ok=True)
-    file_path = product_dir / filename
-    file_path.write_bytes(image_bytes)
-
-    relative_path = f"products/{product_id}/{filename}"
-    return f"/media/{relative_path}"
+    return storage.save_product_image(
+        product_id=str(product_id),
+        filename=filename,
+        image_bytes=image_bytes,
+        content_type=image.content_type,
+    )
 
 
 def _remove_product_media_dir(product_id: ObjectId) -> None:
-    product_dir = _products_media_dir() / str(product_id)
-    if product_dir.exists():
-        shutil.rmtree(product_dir)
+    storage.delete_product_media(str(product_id))
 
 
 @router.post("", response_model=ProductOut, status_code=status.HTTP_201_CREATED)

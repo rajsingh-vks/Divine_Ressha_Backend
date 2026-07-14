@@ -50,6 +50,17 @@ def _media_public_path(relative_path: str) -> str:
     return f"{settings.media_url_prefix}/{relative_path.lstrip('/')}"
 
 
+def _extract_relative_media_path(raw_path: str) -> str | None:
+    for prefix in ("/media/", "/api/media/"):
+        if raw_path.startswith(prefix):
+            return raw_path.removeprefix(prefix)
+    return None
+
+
+def _media_file_exists(relative_path: str) -> bool:
+    return (_products_media_dir().parent / relative_path).exists()
+
+
 def _normalize_image_url(request: Request, raw_url: str | None) -> str | None:
     if not raw_url:
         return None
@@ -57,17 +68,33 @@ def _normalize_image_url(request: Request, raw_url: str | None) -> str | None:
     base_url = _public_base_url(request)
 
     if raw_url.startswith("/media/"):
-        return f"{base_url}{_media_public_path(raw_url.removeprefix('/media/'))}"
+        rel_path = raw_url.removeprefix('/media/')
+        if not _media_file_exists(rel_path):
+            return None
+        return f"{base_url}{_media_public_path(rel_path)}"
 
     if raw_url.startswith("/api/media/"):
+        rel_path = raw_url.removeprefix('/api/media/')
+        if not _media_file_exists(rel_path):
+            return None
         return f"{base_url}{raw_url}"
 
     if raw_url.startswith("http://") or raw_url.startswith("https://"):
         parsed = urlparse(raw_url)
         if parsed.path.startswith("/media/"):
-            return f"{base_url}{_media_public_path(parsed.path.removeprefix('/media/'))}"
+            rel_path = parsed.path.removeprefix('/media/')
+            if not _media_file_exists(rel_path):
+                return None
+            return f"{base_url}{_media_public_path(rel_path)}"
         if parsed.path.startswith("/api/media/"):
+            rel_path = parsed.path.removeprefix('/api/media/')
+            if not _media_file_exists(rel_path):
+                return None
             return f"{base_url}{parsed.path}"
+
+        rel_path = _extract_relative_media_path(parsed.path)
+        if rel_path and not _media_file_exists(rel_path):
+            return None
 
     return raw_url
 

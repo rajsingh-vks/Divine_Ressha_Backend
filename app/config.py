@@ -29,6 +29,7 @@ class Settings:
         self.api_version = "0.1.0"
         self.mongodb_uri = getenv("MONGODB_URI", "mongodb://localhost:27017")
         self.mongodb_database = getenv("MONGODB_DATABASE", "divine_reesha")
+        self.public_base_url = getenv("PUBLIC_BASE_URL", "").strip().rstrip("/") or None
         self.cors_origins = [
             origin.strip()
             for origin in getenv("CORS_ORIGINS", "http://localhost:3000").split(",")

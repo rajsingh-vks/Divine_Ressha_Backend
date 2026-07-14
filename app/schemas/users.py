@@ -36,3 +36,11 @@ class UserAdminUpdate(BaseModel):
 
 class UserStatusUpdate(BaseModel):
     status: AccountStatus = Field(...)
+
+
+class AdminCreateRequest(BaseModel):
+    email: str = Field(..., min_length=3, max_length=254)
+    password: str = Field(..., min_length=8, max_length=128)
+    full_name: str | None = Field(default=None, max_length=120)
+    phone: str | None = Field(default=None, max_length=30)
+    bio: str | None = Field(default=None, max_length=500)

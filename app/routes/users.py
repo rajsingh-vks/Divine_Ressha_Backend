@@ -5,7 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, sta
 
 from app.dependencies import require_role
 from app.schemas.auth import UserProfile
-from app.schemas.users import UserAdminUpdate, UserOut, UserStatusUpdate
+from app.schemas.users import AdminCreateRequest, UserAdminUpdate, UserOut, UserStatusUpdate
+from app.security import hash_password
 
 
 router = APIRouter(prefix="/users", tags=["User Management"])
@@ -122,3 +123,39 @@ async def delete_user(
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
+
+
+@router.post("/admin", response_model=UserOut, status_code=status.HTTP_201_CREATED)
+async def create_admin_user(
+    payload: AdminCreateRequest,
+    request: Request,
+    current_admin=Depends(require_role("admin")),
+):
+    db = request.app.state.mongo_db
+    email = payload.email.strip().lower()
+
+    existing = await db.users.find_one({"email": email})
+    if existing:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email is already registered.")
+
+    now = datetime.now(UTC)
+    salt, pw_hash = hash_password(payload.password)
+    document = {
+        "email": email,
+        "password_salt": salt,
+        "password_hash": pw_hash,
+        "full_name": payload.full_name.strip() if payload.full_name else None,
+        "phone": payload.phone.strip() if payload.phone else None,
+        "avatar_url": None,
+        "bio": payload.bio.strip() if payload.bio else None,
+        "store_name": None,
+        "role": "admin",
+        "status": "active",
+        "email_verified": True,
+        "created_at": now,
+        "updated_at": now,
+        "created_by_admin_id": current_admin["_id"],
+    }
+    result = await db.users.insert_one(document)
+    created = await db.users.find_one({"_id": result.inserted_id})
+    return serialize_user(created)

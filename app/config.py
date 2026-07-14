@@ -30,6 +30,10 @@ class Settings:
         self.mongodb_uri = getenv("MONGODB_URI", "mongodb://localhost:27017")
         self.mongodb_database = getenv("MONGODB_DATABASE", "divine_reesha")
         self.public_base_url = getenv("PUBLIC_BASE_URL", "").strip().rstrip("/") or None
+        self.media_url_prefix = getenv("MEDIA_URL_PREFIX", "/api/media").strip() or "/api/media"
+        if not self.media_url_prefix.startswith("/"):
+            self.media_url_prefix = f"/{self.media_url_prefix}"
+        self.media_url_prefix = self.media_url_prefix.rstrip("/")
         self.cors_origins = [
             origin.strip()
             for origin in getenv("CORS_ORIGINS", "http://localhost:3000").split(",")

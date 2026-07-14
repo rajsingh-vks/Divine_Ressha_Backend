@@ -42,6 +42,7 @@ app.add_middleware(
 media_dir = Path(__file__).resolve().parents[1] / "media"
 media_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/media", StaticFiles(directory=media_dir), name="media")
+app.mount("/api/media", StaticFiles(directory=media_dir), name="api-media")
 
 app.include_router(health.router)
 app.include_router(auth.router)

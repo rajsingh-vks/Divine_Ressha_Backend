@@ -46,6 +46,10 @@ def _public_base_url(request: Request) -> str:
     return f"{scheme}://{host}".rstrip("/")
 
 
+def _media_public_path(relative_path: str) -> str:
+    return f"{settings.media_url_prefix}/{relative_path.lstrip('/')}"
+
+
 def _normalize_image_url(request: Request, raw_url: str | None) -> str | None:
     if not raw_url:
         return None
@@ -53,11 +57,16 @@ def _normalize_image_url(request: Request, raw_url: str | None) -> str | None:
     base_url = _public_base_url(request)
 
     if raw_url.startswith("/media/"):
+        return f"{base_url}{_media_public_path(raw_url.removeprefix('/media/'))}"
+
+    if raw_url.startswith("/api/media/"):
         return f"{base_url}{raw_url}"
 
     if raw_url.startswith("http://") or raw_url.startswith("https://"):
         parsed = urlparse(raw_url)
         if parsed.path.startswith("/media/"):
+            return f"{base_url}{_media_public_path(parsed.path.removeprefix('/media/'))}"
+        if parsed.path.startswith("/api/media/"):
             return f"{base_url}{parsed.path}"
 
     return raw_url

@@ -178,3 +178,71 @@ async def test_delete_user_not_found(client, admin_token):
         headers={"Authorization": f"Bearer {admin_token}"},
     )
     assert response.status_code == 404
+
+
+# ─── create admin user (secure) ─────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_create_admin_user_as_admin(client, admin_token):
+    response = await client.post(
+        "/users/admin",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "email": "newadmin@test.com",
+            "password": "Admin@12345",
+            "full_name": "New Admin",
+            "phone": "+1-555-009-9999",
+            "bio": "Created by admin",
+        },
+    )
+    assert response.status_code == 201
+    body = response.json()
+    assert body["email"] == "newadmin@test.com"
+    assert body["role"] == "admin"
+    assert body["status"] == "active"
+
+
+@pytest.mark.asyncio
+async def test_create_admin_user_forbidden_for_customer(client, customer_token):
+    response = await client.post(
+        "/users/admin",
+        headers={"Authorization": f"Bearer {customer_token}"},
+        json={
+            "email": "blockedadmin@test.com",
+            "password": "Admin@12345",
+        },
+    )
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_create_admin_user_requires_auth(client):
+    response = await client.post(
+        "/users/admin",
+        json={
+            "email": "noauthadmin@test.com",
+            "password": "Admin@12345",
+        },
+    )
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_create_admin_user_conflict_email(client, admin_token):
+    await client.post(
+        "/users/admin",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "email": "dupeadmin@test.com",
+            "password": "Admin@12345",
+        },
+    )
+    response = await client.post(
+        "/users/admin",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "email": "dupeadmin@test.com",
+            "password": "Admin@12345",
+        },
+    )
+    assert response.status_code == 409

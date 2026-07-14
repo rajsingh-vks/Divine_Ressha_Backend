@@ -1,16 +1,19 @@
 from datetime import UTC, datetime
 from pathlib import Path
 import shutil
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from bson import ObjectId
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
 
+from app.config import get_settings
 from app.dependencies import require_role
 from app.schemas.products import ProductOut
 
 
 router = APIRouter(prefix="/products", tags=["Products"])
+settings = get_settings()
 
 ALLOWED_STATUSES = {"Active", "Draft", "Archived"}
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
@@ -32,7 +35,35 @@ def _products_media_dir() -> Path:
     return media_dir
 
 
-def _serialize_product(document: dict) -> ProductOut:
+def _public_base_url(request: Request) -> str:
+    if settings.public_base_url:
+        return settings.public_base_url
+
+    forwarded_proto = request.headers.get("x-forwarded-proto")
+    forwarded_host = request.headers.get("x-forwarded-host")
+    scheme = forwarded_proto or request.url.scheme
+    host = forwarded_host or request.headers.get("host") or request.url.netloc
+    return f"{scheme}://{host}".rstrip("/")
+
+
+def _normalize_image_url(request: Request, raw_url: str | None) -> str | None:
+    if not raw_url:
+        return None
+
+    base_url = _public_base_url(request)
+
+    if raw_url.startswith("/media/"):
+        return f"{base_url}{raw_url}"
+
+    if raw_url.startswith("http://") or raw_url.startswith("https://"):
+        parsed = urlparse(raw_url)
+        if parsed.path.startswith("/media/"):
+            return f"{base_url}{parsed.path}"
+
+    return raw_url
+
+
+def _serialize_product(document: dict, request: Request) -> ProductOut:
     return ProductOut(
         id=str(document["_id"]),
         name=document["name"],
@@ -47,7 +78,7 @@ def _serialize_product(document: dict) -> ProductOut:
         stock=int(document.get("stock") or 0),
         sku=document.get("sku"),
         status=document.get("status", "Active"),
-        image_url=document.get("image_url"),
+        image_url=_normalize_image_url(request, document.get("image_url")),
         created_at=document["created_at"],
         updated_at=document["updated_at"],
     )
@@ -60,11 +91,7 @@ def _normalize_text(value: str | None) -> str | None:
     return cleaned or None
 
 
-async def _save_uploaded_image(
-    request: Request,
-    product_id: ObjectId,
-    image: UploadFile,
-) -> str:
+async def _save_uploaded_image(product_id: ObjectId, image: UploadFile) -> str:
     if image.content_type and not image.content_type.startswith("image/"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only image files are allowed.")
 
@@ -82,7 +109,7 @@ async def _save_uploaded_image(
     file_path.write_bytes(image_bytes)
 
     relative_path = f"products/{product_id}/{filename}"
-    return f"{str(request.base_url).rstrip('/')}/media/{relative_path}"
+    return f"/media/{relative_path}"
 
 
 def _remove_product_media_dir(product_id: ObjectId) -> None:
@@ -133,7 +160,7 @@ async def create_product(
     image_url: str | None = None
 
     if image and image.filename:
-        image_url = await _save_uploaded_image(request, product_id, image)
+        image_url = await _save_uploaded_image(product_id, image)
 
     document = {
         "_id": product_id,
@@ -155,7 +182,7 @@ async def create_product(
     }
 
     await db.products.insert_one(document)
-    return _serialize_product(document)
+    return _serialize_product(document, request)
 
 
 @router.get("", response_model=list[ProductOut])
@@ -176,7 +203,7 @@ async def list_products(
         .limit(limit)
     )
     items = await cursor.to_list(length=limit)
-    return [_serialize_product(item) for item in items]
+    return [_serialize_product(item, request) for item in items]
 
 
 @router.get("/{product_id}", response_model=ProductOut)
@@ -184,7 +211,7 @@ async def get_product(request: Request, product_id: str):
     product = await request.app.state.mongo_db.products.find_one({"_id": _to_object_id(product_id)})
     if not product:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found.")
-    return _serialize_product(product)
+    return _serialize_product(product, request)
 
 
 @router.put("/{product_id}", response_model=ProductOut)
@@ -262,12 +289,12 @@ async def update_product(
 
     if image and image.filename:
         _remove_product_media_dir(product_obj_id)
-        updates["image_url"] = await _save_uploaded_image(request, product_obj_id, image)
+        updates["image_url"] = await _save_uploaded_image(product_obj_id, image)
 
     updates["updated_at"] = datetime.now(UTC)
     await db.products.update_one({"_id": product_obj_id}, {"$set": updates})
     updated = await db.products.find_one({"_id": product_obj_id})
-    return _serialize_product(updated)
+    return _serialize_product(updated, request)
 
 
 @router.delete("/{product_id}", status_code=status.HTTP_204_NO_CONTENT)

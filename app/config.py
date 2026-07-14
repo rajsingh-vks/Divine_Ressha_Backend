@@ -34,6 +34,10 @@ class Settings:
         if not self.media_url_prefix.startswith("/"):
             self.media_url_prefix = f"/{self.media_url_prefix}"
         self.media_url_prefix = self.media_url_prefix.rstrip("/")
+        self.media_backend = getenv("MEDIA_BACKEND", "local").strip().lower() or "local"
+        self.aws_region = getenv("AWS_REGION", "").strip() or None
+        self.aws_s3_bucket = getenv("AWS_S3_BUCKET", "").strip() or None
+        self.aws_s3_public_base_url = getenv("AWS_S3_PUBLIC_BASE_URL", "").strip().rstrip("/") or None
         self.cors_origins = [
             origin.strip()
             for origin in getenv("CORS_ORIGINS", "http://localhost:3000").split(",")

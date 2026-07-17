@@ -29,10 +29,16 @@ def _to_object_id(value: str) -> ObjectId:
 
 
 def _razorpay_client() -> razorpay.Client:
-    if not settings.razorpay_key_id or not settings.razorpay_key_secret:
+    missing: list[str] = []
+    if not settings.razorpay_key_id:
+        missing.append("RAZORPAY_KEY_ID")
+    if not settings.razorpay_key_secret:
+        missing.append("RAZORPAY_KEY_SECRET")
+
+    if missing:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Razorpay is not configured on the server.",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Razorpay is not configured on the server. Missing: {', '.join(missing)}",
         )
     return razorpay.Client(auth=(settings.razorpay_key_id, settings.razorpay_key_secret))
 

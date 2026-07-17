@@ -38,6 +38,9 @@ class Settings:
         self.aws_region = getenv("AWS_REGION", "").strip() or None
         self.aws_s3_bucket = getenv("AWS_S3_BUCKET", "").strip() or None
         self.aws_s3_public_base_url = getenv("AWS_S3_PUBLIC_BASE_URL", "").strip().rstrip("/") or None
+        self.razorpay_key_id = getenv("RAZORPAY_KEY_ID", "").strip() or None
+        self.razorpay_key_secret = getenv("RAZORPAY_KEY_SECRET", "").strip() or None
+        self.razorpay_currency = getenv("RAZORPAY_CURRENCY", "INR").strip().upper() or "INR"
         self.cors_origins = [
             origin.strip()
             for origin in getenv("CORS_ORIGINS", "http://localhost:3000").split(",")

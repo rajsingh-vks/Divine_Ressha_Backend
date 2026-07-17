@@ -7,7 +7,20 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
 from app.database import connect_to_mongo
-from app.routes import addresses, auth, cart, health, orders, permissions, products, roles, users, wishlist
+from app.routes import (
+    addresses,
+    auth,
+    cart,
+    health,
+    orders,
+    payments,
+    permissions,
+    products,
+    razorpay_checkout,
+    roles,
+    users,
+    wishlist,
+)
 
 
 settings = get_settings()
@@ -54,6 +67,8 @@ app.include_router(cart.router)
 app.include_router(products.router)
 app.include_router(addresses.router)
 app.include_router(orders.router)
+app.include_router(payments.router)
+app.include_router(razorpay_checkout.router)
 
 
 @app.get("/", tags=["Root"])

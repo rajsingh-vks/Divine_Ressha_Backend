@@ -1,18 +1,24 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from random import randint
 
 from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 
+from app.config import get_settings
 from app.dependencies import get_current_user, require_role
 from app.schemas.orders import (
     AddressSnapshot,
+    OrderConfirmRequest,
+    OrderConfirmationOut,
     OrderCancelRequest,
     OrderCreate,
+    OrderInvoiceOut,
     OrderRefundSummaryOut,
     OrderItemOut,
     OrderRefundUpdateRequest,
     OrderReturnRequest,
+    OrderTrackingEventOut,
+    OrderTrackingOut,
     OrderOut,
     OrderStatusHistory,
     OrderStatusUpdate,
@@ -23,6 +29,7 @@ router = APIRouter(prefix="/orders", tags=["Orders"])
 
 ALLOWED_ORDER_STATUSES = {"placed", "confirmed", "processing", "shipped", "delivered", "cancelled", "returned"}
 ALLOWED_REFUND_STATUSES = {"pending", "processed", "rejected"}
+settings = get_settings()
 
 
 def _to_object_id(value: str) -> ObjectId:
@@ -65,6 +72,46 @@ def _serialize_order(document: dict) -> OrderOut:
         status_history=history,
         created_at=document["created_at"],
         updated_at=document["updated_at"],
+    )
+
+
+def _build_invoice_number(order: dict) -> str:
+    existing = order.get("invoice_number")
+    if existing:
+        return str(existing)
+    return f"INV-{order.get('order_number', str(order['_id']))}"
+
+
+def _build_invoice_url(invoice_number: str) -> str:
+    path = f"{settings.media_url_prefix}/invoices/{invoice_number}.pdf"
+    if settings.public_base_url:
+        return f"{settings.public_base_url}{path}"
+    return path
+
+
+def _serialize_tracking(order: dict) -> OrderTrackingOut:
+    history = [
+        OrderTrackingEventOut(
+            status=str(item.get("status", "")),
+            note=item.get("note"),
+            time=item.get("changed_at") or order.get("updated_at") or order["created_at"],
+        )
+        for item in order.get("status_history", [])
+    ]
+
+    expected_delivery = order.get("expected_delivery")
+    if expected_delivery is None and order.get("status") != "delivered":
+        expected_delivery = order["created_at"] + timedelta(days=5)
+
+    return OrderTrackingOut(
+        order_id=str(order["_id"]),
+        order_number=order["order_number"],
+        status=order.get("status", "placed"),
+        payment_status=order.get("payment_status"),
+        courier=order.get("courier"),
+        awb=order.get("awb"),
+        expected_delivery=expected_delivery,
+        timeline=history,
     )
 
 
@@ -183,6 +230,11 @@ async def place_order(payload: OrderCreate, request: Request, current_user=Depen
         "subtotal": round(subtotal, 2),
         "notes": payload.notes.strip() if payload.notes else None,
         "payment_status": "unpaid",
+        "payment_provider": None,
+        "razorpay_order_id": None,
+        "razorpay_payment_id": None,
+        "razorpay_signature": None,
+        "paid_at": None,
         "cancel_reason": None,
         "cancelled_at": None,
         "return_status": None,
@@ -403,6 +455,200 @@ async def update_order_refund(
     )
     updated = await db.orders.find_one({"_id": order_obj_id})
     return _serialize_order(updated)
+
+
+@router.post("/{order_id}/confirm", response_model=OrderOut)
+async def confirm_order(
+    request: Request,
+    payload: OrderConfirmRequest | None = None,
+    order_id: str = Path(...),
+    current_user=Depends(get_current_user),
+):
+    db = request.app.state.mongo_db
+    order_obj_id = _to_object_id(order_id)
+    order = await db.orders.find_one({"_id": order_obj_id})
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found.")
+
+    if current_user.get("role") != "admin" and order["user_id"] != current_user["_id"]:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found.")
+
+    if order.get("status") in {"cancelled", "returned"}:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Order cannot be confirmed.")
+
+    now = datetime.now(UTC)
+    note = payload.note.strip() if payload and payload.note else "Order confirmed."
+    next_payment_status = payload.payment_status.strip().lower() if payload and payload.payment_status else "paid"
+    next_paid_at = payload.paid_at if payload and payload.paid_at else (now if next_payment_status == "paid" else order.get("paid_at"))
+
+    payment_updates = {
+        "payment_status": next_payment_status,
+        "paid_at": next_paid_at,
+    }
+    if payload and payload.razorpay_order_id:
+        payment_updates["razorpay_order_id"] = payload.razorpay_order_id.strip()
+        payment_updates["payment_provider"] = "razorpay"
+    if payload and payload.razorpay_payment_id:
+        payment_updates["razorpay_payment_id"] = payload.razorpay_payment_id.strip()
+        payment_updates["payment_provider"] = "razorpay"
+    if payload and payload.razorpay_signature:
+        payment_updates["razorpay_signature"] = payload.razorpay_signature.strip()
+        payment_updates["payment_signature_source"] = "frontend_verified"
+
+    await db.orders.update_one(
+        {"_id": order_obj_id},
+        {
+            "$set": {
+                "status": "confirmed",
+                "confirmed_at": now,
+                "updated_at": now,
+                **payment_updates,
+            },
+            "$push": {
+                "status_history": {
+                    "status": "confirmed",
+                    "note": note,
+                    "changed_at": now,
+                    "changed_by": str(current_user["_id"]),
+                }
+            },
+        },
+    )
+
+    updated = await db.orders.find_one({"_id": order_obj_id})
+    return _serialize_order(updated)
+
+
+@router.get("/{order_id}/invoice", response_model=OrderInvoiceOut)
+async def get_order_invoice(
+    request: Request,
+    order_id: str = Path(...),
+    current_user=Depends(get_current_user),
+):
+    db = request.app.state.mongo_db
+    order_obj_id = _to_object_id(order_id)
+    order = await db.orders.find_one({"_id": order_obj_id})
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found.")
+
+    if current_user.get("role") != "admin" and order["user_id"] != current_user["_id"]:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found.")
+
+    now = datetime.now(UTC)
+    invoice_number = _build_invoice_number(order)
+    invoice_generated_at = order.get("invoice_generated_at") or now
+    invoice_url = _build_invoice_url(invoice_number)
+
+    if not order.get("invoice_number"):
+        await db.orders.update_one(
+            {"_id": order_obj_id},
+            {
+                "$set": {
+                    "invoice_number": invoice_number,
+                    "invoice_url": invoice_url,
+                    "invoice_generated_at": invoice_generated_at,
+                    "updated_at": now,
+                }
+            },
+        )
+
+    return OrderInvoiceOut(
+        order_id=str(order["_id"]),
+        order_number=order["order_number"],
+        invoice_number=invoice_number,
+        invoice_url=invoice_url,
+        generated_at=invoice_generated_at,
+    )
+
+
+@router.get("/{order_id}/tracking", response_model=OrderTrackingOut)
+@router.get("/{order_id}/track", response_model=OrderTrackingOut)
+async def get_order_tracking(
+    request: Request,
+    order_id: str = Path(...),
+    current_user=Depends(get_current_user),
+):
+    db = request.app.state.mongo_db
+    order = await db.orders.find_one({"_id": _to_object_id(order_id)})
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found.")
+
+    if current_user.get("role") != "admin" and order["user_id"] != current_user["_id"]:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found.")
+
+    return _serialize_tracking(order)
+
+
+@router.post("/{order_id}/send-confirmation", response_model=OrderConfirmationOut)
+async def send_order_confirmation(
+    request: Request,
+    payload: OrderConfirmRequest | None = None,
+    order_id: str = Path(...),
+    current_user=Depends(get_current_user),
+):
+    db = request.app.state.mongo_db
+    order_obj_id = _to_object_id(order_id)
+    order = await db.orders.find_one({"_id": order_obj_id})
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found.")
+
+    if current_user.get("role") != "admin" and order["user_id"] != current_user["_id"]:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found.")
+
+    now = datetime.now(UTC)
+    invoice_number = _build_invoice_number(order)
+    invoice_url = _build_invoice_url(invoice_number)
+    next_payment_status = payload.payment_status.strip().lower() if payload and payload.payment_status else (order.get("payment_status") or "unpaid")
+    next_paid_at = payload.paid_at if payload and payload.paid_at else (now if next_payment_status == "paid" else order.get("paid_at"))
+
+    payment_updates = {
+        "payment_status": next_payment_status,
+        "paid_at": next_paid_at,
+    }
+    if payload and payload.razorpay_order_id:
+        payment_updates["razorpay_order_id"] = payload.razorpay_order_id.strip()
+        payment_updates["payment_provider"] = "razorpay"
+    if payload and payload.razorpay_payment_id:
+        payment_updates["razorpay_payment_id"] = payload.razorpay_payment_id.strip()
+        payment_updates["payment_provider"] = "razorpay"
+    if payload and payload.razorpay_signature:
+        payment_updates["razorpay_signature"] = payload.razorpay_signature.strip()
+        payment_updates["payment_signature_source"] = "frontend_verified"
+
+    user = await db.users.find_one({"_id": order["user_id"]})
+    recipient = user.get("email") if user else None
+
+    await db.orders.update_one(
+        {"_id": order_obj_id},
+        {
+            "$set": {
+                "invoice_number": invoice_number,
+                "invoice_url": invoice_url,
+                "invoice_generated_at": order.get("invoice_generated_at") or now,
+                "confirmation_sent_at": now,
+                "updated_at": now,
+                **payment_updates,
+            },
+            "$push": {
+                "email_logs": {
+                    "type": "order_confirmation",
+                    "status": "sent",
+                    "recipient": recipient,
+                    "invoice_number": invoice_number,
+                    "sent_at": now,
+                    "sent_by": str(current_user["_id"]),
+                }
+            },
+        },
+    )
+
+    return OrderConfirmationOut(
+        success=True,
+        message="Order confirmation recorded.",
+        order_id=str(order["_id"]),
+        order_number=order["order_number"],
+        invoice_url=invoice_url,
+    )
 
 
 @router.get("/{order_id}/refund", response_model=OrderRefundSummaryOut)

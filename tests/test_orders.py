@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 
 import pytest
 import pytest_asyncio
+from bson import ObjectId
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -206,3 +207,240 @@ async def test_cancel_order(client, customer_token, test_db):
     body = cancel_resp.json()
     assert body["status"] == "cancelled"
     assert body["cancel_reason"] == "Ordered by mistake"
+    assert body["refund_status"] == "not_required"
+
+
+@pytest.mark.asyncio
+async def test_cancel_paid_order_marks_refund_pending(client, customer_token, test_db):
+    address = await client.post(
+        "/addresses",
+        headers={"Authorization": f"Bearer {customer_token}"},
+        json={
+            "full_name": "Refund User",
+            "phone": "+1-555-333-4444",
+            "line1": "Refund Address",
+            "city": "Mumbai",
+            "state": "MH",
+            "postal_code": "400001",
+            "country": "IN",
+            "address_type": "home",
+            "is_default": True,
+        },
+    )
+    product_id = await _create_product(test_db, price=70.0)
+    await client.post(
+        "/cart",
+        headers={"Authorization": f"Bearer {customer_token}"},
+        json={"product_id": product_id, "quantity": 1},
+    )
+    created = await client.post(
+        "/orders",
+        headers={"Authorization": f"Bearer {customer_token}"},
+        json={"address_id": address.json()["id"]},
+    )
+    order_id = created.json()["id"]
+
+    await test_db.orders.update_one(
+        {"_id": ObjectId(order_id)},
+        {"$set": {"payment_status": "paid"}},
+    )
+
+    cancel_resp = await client.patch(
+        f"/orders/{order_id}/cancel",
+        headers={"Authorization": f"Bearer {customer_token}"},
+        json={"reason": "Need refund"},
+    )
+    assert cancel_resp.status_code == 200
+    body = cancel_resp.json()
+    assert body["refund_status"] == "pending"
+    assert body["refund_amount"] == 70.0
+
+
+@pytest.mark.asyncio
+async def test_request_return_for_delivered_order(client, customer_token, test_db):
+    address = await client.post(
+        "/addresses",
+        headers={"Authorization": f"Bearer {customer_token}"},
+        json={
+            "full_name": "Return User",
+            "phone": "+1-555-221-4455",
+            "line1": "Return Address",
+            "city": "Chennai",
+            "state": "TN",
+            "postal_code": "600001",
+            "country": "IN",
+            "address_type": "home",
+            "is_default": True,
+        },
+    )
+    product_id = await _create_product(test_db, price=55.0)
+    await client.post(
+        "/cart",
+        headers={"Authorization": f"Bearer {customer_token}"},
+        json={"product_id": product_id, "quantity": 1},
+    )
+    created = await client.post(
+        "/orders",
+        headers={"Authorization": f"Bearer {customer_token}"},
+        json={"address_id": address.json()["id"]},
+    )
+    order_id = created.json()["id"]
+
+    await test_db.orders.update_one(
+        {"_id": ObjectId(order_id)},
+        {"$set": {"status": "delivered", "payment_status": "paid"}},
+    )
+
+    return_resp = await client.post(
+        f"/orders/{order_id}/return",
+        headers={"Authorization": f"Bearer {customer_token}"},
+        json={"reason": "Damaged item"},
+    )
+    assert return_resp.status_code == 200
+    body = return_resp.json()
+    assert body["return_status"] == "requested"
+    assert body["refund_status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_admin_process_refund(client, customer_token, admin_token, test_db):
+    address = await client.post(
+        "/addresses",
+        headers={"Authorization": f"Bearer {customer_token}"},
+        json={
+            "full_name": "Process Refund",
+            "phone": "+1-555-100-2000",
+            "line1": "Process Address",
+            "city": "Kolkata",
+            "state": "WB",
+            "postal_code": "700001",
+            "country": "IN",
+            "address_type": "home",
+            "is_default": True,
+        },
+    )
+    product_id = await _create_product(test_db, price=80.0)
+    await client.post(
+        "/cart",
+        headers={"Authorization": f"Bearer {customer_token}"},
+        json={"product_id": product_id, "quantity": 1},
+    )
+    created = await client.post(
+        "/orders",
+        headers={"Authorization": f"Bearer {customer_token}"},
+        json={"address_id": address.json()["id"]},
+    )
+    order_id = created.json()["id"]
+
+    await test_db.orders.update_one(
+        {"_id": ObjectId(order_id)},
+        {
+            "$set": {
+                "status": "cancelled",
+                "payment_status": "paid",
+                "refund_status": "pending",
+                "refund_amount": 80.0,
+            }
+        },
+    )
+
+    refund_resp = await client.patch(
+        f"/orders/{order_id}/refund",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"status": "processed", "reason": "Refund done", "refund_reference": "rfnd_123"},
+    )
+    assert refund_resp.status_code == 200
+    body = refund_resp.json()
+    assert body["refund_status"] == "processed"
+    assert body["refund_reference"] == "rfnd_123"
+
+
+@pytest.mark.asyncio
+async def test_get_order_refund_summary_admin(client, customer_token, admin_token, test_db):
+    address = await client.post(
+        "/addresses",
+        headers={"Authorization": f"Bearer {customer_token}"},
+        json={
+            "full_name": "Refund Summary",
+            "phone": "+1-555-555-2222",
+            "line1": "Summary Address",
+            "city": "Pune",
+            "state": "MH",
+            "postal_code": "411001",
+            "country": "IN",
+            "address_type": "home",
+            "is_default": True,
+        },
+    )
+    product_id = await _create_product(test_db, price=150.0)
+    await client.post(
+        "/cart",
+        headers={"Authorization": f"Bearer {customer_token}"},
+        json={"product_id": product_id, "quantity": 1},
+    )
+    created = await client.post(
+        "/orders",
+        headers={"Authorization": f"Bearer {customer_token}"},
+        json={"address_id": address.json()["id"]},
+    )
+    order_id = created.json()["id"]
+
+    await test_db.orders.update_one(
+        {"_id": ObjectId(order_id)},
+        {
+            "$set": {
+                "payment_status": "paid",
+                "refund_status": "pending",
+                "refund_amount": 150.0,
+                "refund_reason": "Customer requested cancellation",
+            }
+        },
+    )
+
+    summary = await client.get(
+        f"/orders/{order_id}/refund",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert summary.status_code == 200
+    body = summary.json()
+    assert body["order_id"] == order_id
+    assert body["refund_status"] == "pending"
+    assert body["refund_amount"] == 150.0
+    assert body["order_number"].startswith("DR-")
+
+
+@pytest.mark.asyncio
+async def test_get_order_refund_summary_forbidden_for_customer(client, customer_token, test_db):
+    address = await client.post(
+        "/addresses",
+        headers={"Authorization": f"Bearer {customer_token}"},
+        json={
+            "full_name": "Refund Customer",
+            "phone": "+1-555-100-3333",
+            "line1": "Cust Address",
+            "city": "Delhi",
+            "state": "DL",
+            "postal_code": "110001",
+            "country": "IN",
+            "address_type": "home",
+            "is_default": True,
+        },
+    )
+    product_id = await _create_product(test_db, price=42.0)
+    await client.post(
+        "/cart",
+        headers={"Authorization": f"Bearer {customer_token}"},
+        json={"product_id": product_id, "quantity": 1},
+    )
+    created = await client.post(
+        "/orders",
+        headers={"Authorization": f"Bearer {customer_token}"},
+        json={"address_id": address.json()["id"]},
+    )
+    order_id = created.json()["id"]
+
+    summary = await client.get(
+        f"/orders/{order_id}/refund",
+        headers={"Authorization": f"Bearer {customer_token}"},
+    )
+    assert summary.status_code == 403

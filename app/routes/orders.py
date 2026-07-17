@@ -9,7 +9,10 @@ from app.schemas.orders import (
     AddressSnapshot,
     OrderCancelRequest,
     OrderCreate,
+    OrderRefundSummaryOut,
     OrderItemOut,
+    OrderRefundUpdateRequest,
+    OrderReturnRequest,
     OrderOut,
     OrderStatusHistory,
     OrderStatusUpdate,
@@ -18,7 +21,8 @@ from app.schemas.orders import (
 
 router = APIRouter(prefix="/orders", tags=["Orders"])
 
-ALLOWED_ORDER_STATUSES = {"placed", "confirmed", "processing", "shipped", "delivered", "cancelled"}
+ALLOWED_ORDER_STATUSES = {"placed", "confirmed", "processing", "shipped", "delivered", "cancelled", "returned"}
+ALLOWED_REFUND_STATUSES = {"pending", "processed", "rejected"}
 
 
 def _to_object_id(value: str) -> ObjectId:
@@ -48,6 +52,16 @@ def _serialize_order(document: dict) -> OrderOut:
         notes=document.get("notes"),
         cancel_reason=document.get("cancel_reason"),
         cancelled_at=document.get("cancelled_at"),
+        payment_status=document.get("payment_status"),
+        return_status=document.get("return_status"),
+        return_reason=document.get("return_reason"),
+        return_requested_at=document.get("return_requested_at"),
+        refund_status=document.get("refund_status"),
+        refund_amount=document.get("refund_amount"),
+        refund_reason=document.get("refund_reason"),
+        refund_reference=document.get("refund_reference"),
+        refund_requested_at=document.get("refund_requested_at"),
+        refunded_at=document.get("refunded_at"),
         status_history=history,
         created_at=document["created_at"],
         updated_at=document["updated_at"],
@@ -168,8 +182,18 @@ async def place_order(payload: OrderCreate, request: Request, current_user=Depen
         "total_items": total_items,
         "subtotal": round(subtotal, 2),
         "notes": payload.notes.strip() if payload.notes else None,
+        "payment_status": "unpaid",
         "cancel_reason": None,
         "cancelled_at": None,
+        "return_status": None,
+        "return_reason": None,
+        "return_requested_at": None,
+        "refund_status": None,
+        "refund_amount": None,
+        "refund_reason": None,
+        "refund_reference": None,
+        "refund_requested_at": None,
+        "refunded_at": None,
         "status_history": [
             {
                 "status": "placed",
@@ -252,6 +276,13 @@ async def cancel_order(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Order cannot be cancelled.")
 
     now = datetime.now(UTC)
+    payment_status = (order.get("payment_status") or "").lower()
+    refund_updates = {
+        "refund_status": "pending" if payment_status == "paid" else "not_required",
+        "refund_amount": float(order.get("subtotal") or 0) if payment_status == "paid" else None,
+        "refund_reason": payload.reason.strip() if payload.reason else "Order cancelled by user.",
+        "refund_requested_at": now if payment_status == "paid" else None,
+    }
     await db.orders.update_one(
         {"_id": order_obj_id},
         {
@@ -260,6 +291,7 @@ async def cancel_order(
                 "cancel_reason": payload.reason.strip() if payload.reason else None,
                 "cancelled_at": now,
                 "updated_at": now,
+                **refund_updates,
             },
             "$push": {
                 "status_history": {
@@ -273,3 +305,129 @@ async def cancel_order(
     )
     updated = await db.orders.find_one({"_id": order_obj_id})
     return _serialize_order(updated)
+
+
+@router.post("/{order_id}/return", response_model=OrderOut)
+async def request_order_return(
+    payload: OrderReturnRequest,
+    request: Request,
+    order_id: str = Path(...),
+    current_user=Depends(get_current_user),
+):
+    db = request.app.state.mongo_db
+    order_obj_id = _to_object_id(order_id)
+    order = await db.orders.find_one({"_id": order_obj_id})
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found.")
+
+    if current_user.get("role") != "admin" and order["user_id"] != current_user["_id"]:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found.")
+
+    if order.get("status") != "delivered":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Return can be requested only for delivered orders.")
+
+    if order.get("return_status") == "requested":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Return is already requested.")
+
+    now = datetime.now(UTC)
+    payment_status = (order.get("payment_status") or "").lower()
+    await db.orders.update_one(
+        {"_id": order_obj_id},
+        {
+            "$set": {
+                "return_status": "requested",
+                "return_reason": payload.reason.strip(),
+                "return_requested_at": now,
+                "refund_status": "pending" if payment_status == "paid" else "not_required",
+                "refund_amount": float(order.get("subtotal") or 0) if payment_status == "paid" else None,
+                "refund_reason": payload.reason.strip(),
+                "refund_requested_at": now if payment_status == "paid" else None,
+                "updated_at": now,
+            },
+            "$push": {
+                "status_history": {
+                    "status": "delivered",
+                    "note": "Return requested by customer.",
+                    "changed_at": now,
+                    "changed_by": str(current_user["_id"]),
+                }
+            },
+        },
+    )
+    updated = await db.orders.find_one({"_id": order_obj_id})
+    return _serialize_order(updated)
+
+
+@router.patch("/{order_id}/refund", response_model=OrderOut)
+async def update_order_refund(
+    payload: OrderRefundUpdateRequest,
+    request: Request,
+    order_id: str = Path(...),
+    current_admin=Depends(require_role("admin")),
+):
+    normalized_status = payload.status.strip().lower()
+    if normalized_status not in ALLOWED_REFUND_STATUSES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid refund status. Allowed: {sorted(ALLOWED_REFUND_STATUSES)}")
+
+    db = request.app.state.mongo_db
+    order_obj_id = _to_object_id(order_id)
+    order = await db.orders.find_one({"_id": order_obj_id})
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found.")
+
+    now = datetime.now(UTC)
+    next_order_status = order.get("status")
+    if normalized_status == "processed" and order.get("status") in {"cancelled", "delivered", "shipped", "processing", "confirmed", "placed"}:
+        next_order_status = "returned" if order.get("return_status") == "requested" or order.get("status") == "delivered" else "cancelled"
+
+    await db.orders.update_one(
+        {"_id": order_obj_id},
+        {
+            "$set": {
+                "refund_status": normalized_status,
+                "refund_reason": payload.reason.strip() if payload.reason else order.get("refund_reason"),
+                "refund_reference": payload.refund_reference.strip() if payload.refund_reference else order.get("refund_reference"),
+                "refunded_at": now if normalized_status == "processed" else None,
+                "status": next_order_status,
+                "updated_at": now,
+            },
+            "$push": {
+                "status_history": {
+                    "status": next_order_status,
+                    "note": f"Refund status updated to {normalized_status}.",
+                    "changed_at": now,
+                    "changed_by": str(current_admin["_id"]),
+                }
+            },
+        },
+    )
+    updated = await db.orders.find_one({"_id": order_obj_id})
+    return _serialize_order(updated)
+
+
+@router.get("/{order_id}/refund", response_model=OrderRefundSummaryOut)
+async def get_order_refund_summary(
+    request: Request,
+    order_id: str = Path(...),
+    current_admin=Depends(require_role("admin")),
+):
+    db = request.app.state.mongo_db
+    order = await db.orders.find_one({"_id": _to_object_id(order_id)})
+    if not order:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Order not found.")
+
+    return OrderRefundSummaryOut(
+        order_id=str(order["_id"]),
+        order_number=order["order_number"],
+        user_id=str(order["user_id"]),
+        order_status=order["status"],
+        payment_status=order.get("payment_status"),
+        return_status=order.get("return_status"),
+        refund_status=order.get("refund_status"),
+        refund_amount=order.get("refund_amount"),
+        refund_reason=order.get("refund_reason"),
+        refund_reference=order.get("refund_reference"),
+        refund_requested_at=order.get("refund_requested_at"),
+        refunded_at=order.get("refunded_at"),
+        updated_at=order["updated_at"],
+    )

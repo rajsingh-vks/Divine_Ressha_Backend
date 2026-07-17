@@ -50,3 +50,30 @@ class CheckoutVerifyPaymentRequest(BaseModel):
 class CheckoutVerifyPaymentOut(BaseModel):
     success: bool
     message: str
+
+
+class RazorpayRefundCreateRequest(BaseModel):
+    order_id: str = Field(..., min_length=24, max_length=24)
+    amount: int | None = Field(default=None, ge=1, description="Amount in paise. Defaults to full paid amount.")
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class RazorpayRefundOut(BaseModel):
+    success: bool
+    message: str
+    backend_order_id: str
+    refund_id: str
+    payment_id: str
+    amount: int
+    currency: str
+    status: str
+
+
+class RazorpayRefundStatusOut(BaseModel):
+    refund_id: str
+    payment_id: str
+    amount: int
+    currency: str
+    status: str
+    speed_processed: str | None = None
+    created_at: int | None = None

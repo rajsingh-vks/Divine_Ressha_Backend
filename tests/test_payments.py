@@ -22,11 +22,37 @@ class _FakeRazorpayUtility:
         return True
 
 
+class _FakeRazorpayPaymentAPI:
+    def refund(self, payment_id: str, data: dict):
+        return {
+            "id": "rfnd_test_123",
+            "payment_id": payment_id,
+            "amount": data["amount"],
+            "currency": "INR",
+            "status": "processed",
+        }
+
+
+class _FakeRazorpayRefundAPI:
+    def fetch(self, refund_id: str):
+        return {
+            "id": refund_id,
+            "payment_id": "pay_test_123",
+            "amount": 39800,
+            "currency": "INR",
+            "status": "processed",
+            "speed_processed": "normal",
+            "created_at": 1721260800,
+        }
+
+
 class _FakeRazorpayClient:
     def __init__(self, auth):
         self.auth = auth
         self.order = _FakeRazorpayOrderAPI()
         self.utility = _FakeRazorpayUtility()
+        self.payment = _FakeRazorpayPaymentAPI()
+        self.refund = _FakeRazorpayRefundAPI()
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -130,6 +156,85 @@ async def test_verify_razorpay_payment(client, customer_token, customer_user, te
     assert body["success"] is True
     assert body["backend_order_id"] == order_id
     assert body["payment_status"] == "paid"
+
+
+@pytest.mark.asyncio
+async def test_create_razorpay_refund_as_admin(client, customer_token, customer_user, admin_token, test_db, monkeypatch):
+    monkeypatch.setattr(payments_route.razorpay, "Client", _FakeRazorpayClient)
+    monkeypatch.setattr(payments_route.settings, "razorpay_key_id", "rzp_test_key")
+    monkeypatch.setattr(payments_route.settings, "razorpay_key_secret", "rzp_test_secret")
+
+    order_id = await _insert_order_for_user(test_db, customer_user["_id"])
+    await test_db.orders.update_one(
+        {"_id": payments_route._to_object_id(order_id)},
+        {
+            "$set": {
+                "payment_status": "paid",
+                "razorpay_payment_id": "pay_test_123",
+            }
+        },
+    )
+
+    response = await client.post(
+        "/payments/razorpay/refund",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={"order_id": order_id, "reason": "Customer cancelled"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    assert body["refund_id"] == "rfnd_test_123"
+    assert body["amount"] == 39800
+
+
+@pytest.mark.asyncio
+async def test_get_razorpay_refund_status_as_admin(client, customer_user, admin_token, test_db, monkeypatch):
+    monkeypatch.setattr(payments_route.razorpay, "Client", _FakeRazorpayClient)
+    monkeypatch.setattr(payments_route.settings, "razorpay_key_id", "rzp_test_key")
+    monkeypatch.setattr(payments_route.settings, "razorpay_key_secret", "rzp_test_secret")
+
+    order_id = await _insert_order_for_user(test_db, customer_user["_id"])
+    await test_db.orders.update_one(
+        {"_id": payments_route._to_object_id(order_id)},
+        {
+            "$set": {
+                "payment_status": "paid",
+                "refund_reference": "rfnd_test_123",
+                "refund_status": "pending",
+            }
+        },
+    )
+
+    response = await client.get(
+        "/payments/razorpay/refund/rfnd_test_123",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["refund_id"] == "rfnd_test_123"
+    assert body["status"] == "processed"
+
+
+@pytest.mark.asyncio
+async def test_create_razorpay_refund_requires_admin(client, customer_token, customer_user, test_db, monkeypatch):
+    monkeypatch.setattr(payments_route.razorpay, "Client", _FakeRazorpayClient)
+    monkeypatch.setattr(payments_route.settings, "razorpay_key_id", "rzp_test_key")
+    monkeypatch.setattr(payments_route.settings, "razorpay_key_secret", "rzp_test_secret")
+
+    order_id = await _insert_order_for_user(test_db, customer_user["_id"])
+    await test_db.orders.update_one(
+        {"_id": payments_route._to_object_id(order_id)},
+        {"$set": {"payment_status": "paid", "razorpay_payment_id": "pay_test_123"}},
+    )
+
+    response = await client.post(
+        "/payments/razorpay/refund",
+        headers={"Authorization": f"Bearer {customer_token}"},
+        json={"order_id": order_id},
+    )
+    assert response.status_code == 403
 
 
 @pytest.mark.asyncio

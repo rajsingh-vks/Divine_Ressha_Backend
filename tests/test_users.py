@@ -180,6 +180,38 @@ async def test_delete_user_not_found(client, admin_token):
     assert response.status_code == 404
 
 
+@pytest.mark.asyncio
+async def test_delete_user_hard_delete(client, admin_token):
+    reg = await client.post("/auth/register", json={
+        "email": "harddelete@test.com",
+        "password": "Delete@12345",
+        "role": "customer",
+    })
+    assert reg.status_code == 201
+    user_id = reg.json()["user"]["id"]
+
+    response = await client.delete(
+        f"/users/{user_id}?hard=true",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 204
+
+    get_resp = await client.get(
+        f"/users/{user_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert get_resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_delete_user_hard_delete_self_blocked(client, admin_token, admin_user):
+    response = await client.delete(
+        f"/users/{admin_user['_id']}?hard=true",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 400
+
+
 # ─── create admin user (secure) ─────────────────────────────────────────────
 
 @pytest.mark.asyncio

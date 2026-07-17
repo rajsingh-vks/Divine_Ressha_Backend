@@ -115,10 +115,25 @@ async def update_user_status(
 async def delete_user(
     request: Request,
     user_id: str = Path(...),
+    hard: bool = Query(default=False),
     current_admin=Depends(require_role("admin")),
 ):
-    result = await request.app.state.mongo_db.users.update_one(
-        {"_id": _to_object_id(user_id)},
+    db = request.app.state.mongo_db
+    user_obj_id = _to_object_id(user_id)
+
+    if hard:
+        if user_obj_id == current_admin["_id"]:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="You cannot hard delete your own account.")
+
+        result = await db.users.delete_one({"_id": user_obj_id})
+        if result.deleted_count == 0:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
+
+        await db.sessions.delete_many({"user_id": user_obj_id})
+        return
+
+    result = await db.users.update_one(
+        {"_id": user_obj_id},
         {"$set": {"status": "deleted", "updated_at": datetime.now(UTC)}},
     )
     if result.matched_count == 0:

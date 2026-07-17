@@ -60,6 +60,22 @@ async def test_register_invalid_password_too_short(client):
     assert response.status_code == 422
 
 
+@pytest.mark.asyncio
+async def test_signup_alias_customer_success(client):
+    payload = {
+        "email": "signup_alias_customer@test.com",
+        "password": "Password@123",
+        "full_name": "Signup Alias Customer",
+        "role": "customer",
+    }
+    response = await client.post("/auth/signup", json=payload)
+    assert response.status_code == 201
+    data = response.json()
+    assert data["user"]["email"] == payload["email"]
+    assert data["user"]["role"] == "customer"
+    assert data["tokens"]["access_token"]
+
+
 # ─── login ────────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio

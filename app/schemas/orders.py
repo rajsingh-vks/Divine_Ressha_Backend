@@ -92,6 +92,84 @@ class OrderOut(BaseModel):
     notes: str | None = None
     cancel_reason: str | None = None
     cancelled_at: datetime | None = None
+    payment_status: str | None = None
+    return_status: str | None = None
+    return_reason: str | None = None
+    return_requested_at: datetime | None = None
+    refund_status: str | None = None
+    refund_amount: float | None = None
+    refund_reason: str | None = None
+    refund_reference: str | None = None
+    refund_requested_at: datetime | None = None
+    refunded_at: datetime | None = None
     status_history: list[OrderStatusHistory] = []
     created_at: datetime
     updated_at: datetime
+
+
+class OrderReturnRequest(BaseModel):
+    reason: str = Field(..., min_length=3, max_length=500)
+
+
+class OrderRefundUpdateRequest(BaseModel):
+    status: str = Field(..., min_length=3, max_length=20)
+    reason: str | None = Field(default=None, max_length=500)
+    refund_reference: str | None = Field(default=None, max_length=120)
+
+
+class OrderRefundSummaryOut(BaseModel):
+    order_id: str
+    order_number: str
+    user_id: str
+    order_status: str
+    payment_status: str | None = None
+    return_status: str | None = None
+    refund_status: str | None = None
+    refund_amount: float | None = None
+    refund_reason: str | None = None
+    refund_reference: str | None = None
+    refund_requested_at: datetime | None = None
+    refunded_at: datetime | None = None
+    updated_at: datetime
+
+
+class OrderConfirmRequest(BaseModel):
+    payment_status: str | None = Field(default="paid", max_length=30)
+    razorpay_order_id: str | None = Field(default=None, max_length=120)
+    razorpay_payment_id: str | None = Field(default=None, max_length=120)
+    razorpay_signature: str | None = Field(default=None, max_length=255)
+    paid_at: datetime | None = None
+    note: str | None = Field(default=None, max_length=500)
+
+
+class OrderInvoiceOut(BaseModel):
+    order_id: str
+    order_number: str
+    invoice_number: str
+    invoice_url: str
+    generated_at: datetime
+
+
+class OrderTrackingEventOut(BaseModel):
+    status: str
+    note: str | None = None
+    time: datetime
+
+
+class OrderTrackingOut(BaseModel):
+    order_id: str
+    order_number: str
+    status: str
+    payment_status: str | None = None
+    courier: str | None = None
+    awb: str | None = None
+    expected_delivery: datetime | None = None
+    timeline: list[OrderTrackingEventOut] = []
+
+
+class OrderConfirmationOut(BaseModel):
+    success: bool
+    message: str
+    order_id: str
+    order_number: str
+    invoice_url: str

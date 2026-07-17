@@ -59,6 +59,7 @@ app.mount("/api/media", StaticFiles(directory=media_dir), name="api-media")
 
 app.include_router(health.router)
 app.include_router(auth.router)
+app.include_router(auth.router, prefix="/api")
 app.include_router(users.router)
 app.include_router(roles.router)
 app.include_router(permissions.router)

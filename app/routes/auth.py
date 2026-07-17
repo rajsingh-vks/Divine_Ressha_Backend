@@ -133,6 +133,12 @@ async def register_user(payload: RegisterRequest, request: Request):
     )
 
 
+@router.post("/signup", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
+async def signup_user(payload: RegisterRequest, request: Request):
+    """Frontend compatibility alias for /auth/register."""
+    return await register_user(payload, request)
+
+
 @router.post("/login", response_model=AuthResponse)
 async def login_user(payload: LoginRequest, request: Request):
     db = request.app.state.mongo_db

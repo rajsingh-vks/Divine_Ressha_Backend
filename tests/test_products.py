@@ -3,6 +3,8 @@ from datetime import UTC, datetime
 import pytest
 import pytest_asyncio
 
+from app.routes.products import settings as product_settings
+
 
 @pytest_asyncio.fixture(autouse=True)
 async def _clean_products_state(test_db):
@@ -43,7 +45,12 @@ async def test_create_product_as_admin_with_image(client, admin_token):
     assert payload["price"] == 24.99
     assert payload["status"] == "Active"
     assert payload["image_url"] is not None
-    assert "/media/products/" in payload["image_url"]
+    image_url = payload["image_url"]
+    assert (
+        "/media/products/" in image_url
+        or "/api/media/products/" in image_url
+        or "amazonaws.com/products/" in image_url
+    )
 
 
 @pytest.mark.asyncio
@@ -151,7 +158,10 @@ async def test_list_products_missing_local_image_returns_null(client, test_db):
     assert response.status_code == 200
     payload = response.json()
     assert len(payload) == 1
-    assert payload[0]["image_url"] is None
+    if product_settings.media_backend == "s3":
+        assert payload[0]["image_url"] is not None
+    else:
+        assert payload[0]["image_url"] is None
 
 
 @pytest.mark.asyncio

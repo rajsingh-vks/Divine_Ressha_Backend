@@ -1,6 +1,7 @@
 """Tests for all /auth/* endpoints."""
 
 import pytest
+import app.routes.auth as auth_route
 
 
 # ─── register ─────────────────────────────────────────────────────────────────
@@ -74,6 +75,65 @@ async def test_signup_alias_customer_success(client):
     assert data["user"]["email"] == payload["email"]
     assert data["user"]["role"] == "customer"
     assert data["tokens"]["access_token"]
+
+
+@pytest.mark.asyncio
+async def test_signup_with_email_and_mobile_verification_success(client):
+    auth_route.settings.otp_expose_codes = True
+    initiate = await client.post(
+        "/auth/signup/initiate",
+        json={
+            "email": "otp_customer@test.com",
+            "password": "Password@123",
+            "full_name": "OTP Customer",
+            "phone": "+91-9000011111",
+            "role": "customer",
+        },
+    )
+    assert initiate.status_code == 200
+    body = initiate.json()
+    assert body["email_verification_code"]
+    assert body["mobile_verification_code"]
+
+    complete = await client.post(
+        "/auth/signup/complete",
+        json={
+            "email": "otp_customer@test.com",
+            "email_code": body["email_verification_code"],
+            "mobile_code": body["mobile_verification_code"],
+        },
+    )
+    assert complete.status_code == 201
+    done = complete.json()
+    assert done["user"]["email"] == "otp_customer@test.com"
+    assert done["user"]["email_verified"] is True
+    assert done["tokens"]["access_token"]
+
+
+@pytest.mark.asyncio
+async def test_signup_complete_invalid_mobile_code(client):
+    auth_route.settings.otp_expose_codes = True
+    initiate = await client.post(
+        "/auth/signup/initiate",
+        json={
+            "email": "otp_invalid_mobile@test.com",
+            "password": "Password@123",
+            "phone": "+91-9000012222",
+            "role": "customer",
+        },
+    )
+    assert initiate.status_code == 200
+    body = initiate.json()
+
+    complete = await client.post(
+        "/auth/signup/complete",
+        json={
+            "email": "otp_invalid_mobile@test.com",
+            "email_code": body["email_verification_code"],
+            "mobile_code": "000000",
+        },
+    )
+    assert complete.status_code == 400
 
 
 # ─── login ────────────────────────────────────────────────────────────────────

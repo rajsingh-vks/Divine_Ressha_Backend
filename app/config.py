@@ -56,6 +56,26 @@ class Settings:
             for origin in getenv("CORS_ORIGINS", "http://localhost:3000").split(",")
             if origin.strip()
         ]
+        self.environment = getenv("ENVIRONMENT", "development").strip().lower() or "development"
+        otp_expose_codes_raw = getenv("OTP_EXPOSE_CODES")
+        if otp_expose_codes_raw is None:
+            self.otp_expose_codes = self.environment != "production"
+        else:
+            self.otp_expose_codes = otp_expose_codes_raw.strip().lower() in {"1", "true", "yes", "on"}
+
+        self.email_delivery_backend = getenv("EMAIL_DELIVERY_BACKEND", "console").strip().lower() or "console"
+        self.ses_from_email = getenv("SES_FROM_EMAIL", "").strip() or None
+        self.ses_configuration_set = getenv("SES_CONFIGURATION_SET", "").strip() or None
+        self.smtp_host = getenv("SMTP_HOST", "").strip() or None
+        self.smtp_port = int(getenv("SMTP_PORT", "587").strip() or "587")
+        self.smtp_username = getenv("SMTP_USERNAME", "").strip() or getenv("EMAIL_USER", "").strip() or None
+        self.smtp_password = getenv("SMTP_PASSWORD", "").strip() or getenv("EMAIL_PASS", "").strip() or None
+        self.smtp_from_email = getenv("SMTP_FROM_EMAIL", "").strip() or None
+        self.smtp_use_tls = getenv("SMTP_USE_TLS", "true").strip().lower() in {"1", "true", "yes", "on"}
+
+        self.sms_delivery_backend = getenv("SMS_DELIVERY_BACKEND", "console").strip().lower() or "console"
+        self.sms_webhook_url = getenv("SMS_WEBHOOK_URL", "").strip() or None
+        self.sms_webhook_auth_token = getenv("SMS_WEBHOOK_AUTH_TOKEN", "").strip() or None
 
 
 @lru_cache

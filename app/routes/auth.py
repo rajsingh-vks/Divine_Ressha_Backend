@@ -1,7 +1,9 @@
 from datetime import UTC, datetime
+import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
+from app.config import get_settings
 from app.dependencies import get_current_user
 from app.schemas.auth import (
     AuthResponse,
@@ -12,6 +14,9 @@ from app.schemas.auth import (
     LogoutResponse,
     ProfileUpdateRequest,
     RegisterRequest,
+    SignupCompleteRequest,
+    SignupInitiateRequest,
+    SignupInitiateResponse,
     RefreshTokenRequest,
     ResendVerificationRequest,
     ResetPasswordRequest,
@@ -28,9 +33,11 @@ from app.security import (
     hash_token,
     verify_password,
 )
+from app.services.notifications import send_email_verification_code_detailed, send_sms_verification_code_detailed
 
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+settings = get_settings()
 
 
 def _utc(dt: datetime) -> datetime:
@@ -83,6 +90,138 @@ def _build_one_time_token() -> tuple[str, dict]:
         "expires_at": now + ONE_TIME_TOKEN_TTL,
         "consumed_at": None,
     }
+
+
+def _generate_verification_code() -> str:
+    return f"{secrets.randbelow(900000) + 100000}"
+
+
+@router.post("/signup/initiate", response_model=SignupInitiateResponse)
+async def initiate_signup(payload: SignupInitiateRequest, request: Request):
+    db = request.app.state.mongo_db
+    email = payload.email.strip().lower()
+
+    existing = await db.users.find_one({"email": email})
+    if existing:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email is already registered.")
+
+    now = datetime.now(UTC)
+    email_code = _generate_verification_code()
+    mobile_code = _generate_verification_code()
+    password_salt, password_hash = hash_password(payload.password)
+
+    await db.signup_verifications.update_one(
+        {"email": email},
+        {
+            "$set": {
+                "email": email,
+                "password_salt": password_salt,
+                "password_hash": password_hash,
+                "full_name": payload.full_name.strip() if payload.full_name else None,
+                "phone": payload.phone.strip(),
+                "role": payload.role,
+                "store_name": payload.store_name.strip() if payload.store_name else None,
+                "email_code_hash": hash_token(email_code),
+                "mobile_code_hash": hash_token(mobile_code),
+                "expires_at": now + ONE_TIME_TOKEN_TTL,
+                "updated_at": now,
+            },
+            "$setOnInsert": {
+                "created_at": now,
+            },
+        },
+        upsert=True,
+    )
+
+    email_sent, email_error = send_email_verification_code_detailed(settings, email, email_code)
+    sms_sent, sms_error = await send_sms_verification_code_detailed(settings, payload.phone.strip(), mobile_code)
+
+    if not settings.otp_expose_codes and (not email_sent or not sms_sent):
+        delivery_errors: list[str] = []
+        if not email_sent and email_error:
+            delivery_errors.append(email_error)
+        if not sms_sent and sms_error:
+            delivery_errors.append(sms_error)
+
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "OTP delivery failed. "
+                + ("; ".join(delivery_errors) if delivery_errors else "Check provider configuration.")
+            ),
+        )
+
+    return SignupInitiateResponse(
+        message="Verification codes generated for email and mobile.",
+        email=email,
+        phone=payload.phone.strip(),
+        expires_in_seconds=int(ONE_TIME_TOKEN_TTL.total_seconds()),
+        email_verification_code=email_code if settings.otp_expose_codes else None,
+        mobile_verification_code=mobile_code if settings.otp_expose_codes else None,
+    )
+
+
+@router.post("/signup/complete", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
+async def complete_signup(payload: SignupCompleteRequest, request: Request):
+    db = request.app.state.mongo_db
+    email = payload.email.strip().lower()
+
+    pending = await db.signup_verifications.find_one({"email": email})
+    if not pending:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Signup verification not found.")
+
+    if _utc(pending["expires_at"]) < datetime.now(UTC):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Verification codes expired. Please initiate signup again.")
+
+    if hash_token(payload.email_code.strip()) != pending.get("email_code_hash"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid email verification code.")
+
+    if hash_token(payload.mobile_code.strip()) != pending.get("mobile_code_hash"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid mobile verification code.")
+
+    existing = await db.users.find_one({"email": email})
+    if existing:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email is already registered.")
+
+    now = datetime.now(UTC)
+    user_document = {
+        "email": email,
+        "password_salt": pending["password_salt"],
+        "password_hash": pending["password_hash"],
+        "full_name": pending.get("full_name"),
+        "phone": pending.get("phone"),
+        "avatar_url": None,
+        "bio": None,
+        "store_name": pending.get("store_name"),
+        "role": pending["role"],
+        "status": "active" if pending["role"] == "customer" else "pending",
+        "email_verified": True,
+        "mobile_verified": True,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    result = await db.users.insert_one(user_document)
+    await db.signup_verifications.delete_one({"_id": pending["_id"]})
+
+    created_user = await db.users.find_one({"_id": result.inserted_id})
+    profile = serialize_user(created_user)
+
+    if pending["role"] == "vendor":
+        return AuthResponse(
+            message="Vendor account created and pending review.",
+            user=profile,
+            tokens=None,
+        )
+
+    access_token, refresh_token, session_document = _build_session(result.inserted_id, pending["role"])
+    await db.sessions.insert_one(session_document)
+
+    return AuthResponse(
+        message="Registration successful after email and mobile verification.",
+        user=profile,
+        tokens=AuthTokens(access_token=access_token, refresh_token=refresh_token, expires_in=86400),
+    )
 
 
 @router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)

@@ -10,6 +10,7 @@ from app.database import connect_to_mongo
 from app.routes import (
     addresses,
     auth,
+    aws_sns,
     cart,
     health,
     orders,
@@ -70,6 +71,7 @@ app.include_router(addresses.router)
 app.include_router(orders.router)
 app.include_router(payments.router)
 app.include_router(razorpay_checkout.router)
+app.include_router(aws_sns.router)
 
 
 @app.get("/", tags=["Root"])

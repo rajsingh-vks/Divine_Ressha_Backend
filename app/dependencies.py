@@ -36,31 +36,59 @@ def _extract_bearer_token(authorization: str | None) -> str:
     return token
 
 
+def _extract_token_from_cookies(request: Request) -> str | None:
+    for cookie_name in (
+        "divine_admin_auth_token",
+        "divine_auth_token",
+        "access_token",
+        "auth_token",
+    ):
+        token = (request.cookies.get(cookie_name) or "").strip()
+        if token:
+            return token
+    return None
+
+
 async def get_current_session(
     request: Request,
     authorization: str | None = Header(default=None),
 ):
-    token = _extract_bearer_token(authorization)
-    session = await request.app.state.mongo_db.sessions.find_one(
-        {
-            "access_token_hash": hash_token(token),
-            "revoked_at": None,
-        }
+    token_candidates: list[str] = []
+
+    if authorization:
+        try:
+            token_candidates.append(_extract_bearer_token(authorization))
+        except HTTPException:
+            pass
+
+    cookie_token = _extract_token_from_cookies(request)
+    if cookie_token and cookie_token not in token_candidates:
+        token_candidates.append(cookie_token)
+
+    if not token_candidates:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication credentials were not provided.",
+        )
+
+    now = datetime.now(UTC)
+    for token in token_candidates:
+        session = await request.app.state.mongo_db.sessions.find_one(
+            {
+                "access_token_hash": hash_token(token),
+                "revoked_at": None,
+            }
+        )
+        if not session:
+            continue
+        if _utc(session["access_expires_at"]) < now:
+            continue
+        return session
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or expired session.",
     )
-
-    if not session:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or expired session.",
-        )
-
-    if _utc(session["access_expires_at"]) < datetime.now(UTC):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Session has expired.",
-        )
-
-    return session
 
 
 async def get_current_user(request: Request, session=Depends(get_current_session)):

@@ -17,6 +17,11 @@ class ProductImageStorage:
         media_dir.mkdir(parents=True, exist_ok=True)
         return media_dir
 
+    def _banner_media_dir(self) -> Path:
+        media_dir = self.project_root / "media" / "hero_banners"
+        media_dir.mkdir(parents=True, exist_ok=True)
+        return media_dir
+
     def _s3_client(self):
         if not self.settings.aws_s3_bucket:
             raise ValueError("AWS_S3_BUCKET is required when MEDIA_BACKEND=s3")
@@ -92,3 +97,61 @@ class ProductImageStorage:
                 if child.is_file():
                     child.unlink()
             product_dir.rmdir()
+
+    def save_banner_image(
+        self,
+        banner_id: str,
+        filename: str,
+        image_bytes: bytes,
+        content_type: str | None,
+    ) -> str:
+        if self._is_s3():
+            key = f"hero_banners/{banner_id}/{filename}"
+            client = self._s3_client()
+            put_kwargs = {
+                "Bucket": self.settings.aws_s3_bucket,
+                "Key": key,
+                "Body": image_bytes,
+            }
+            if content_type:
+                put_kwargs["ContentType"] = content_type
+            client.put_object(**put_kwargs)
+            return self._s3_public_url(key)
+
+        banner_dir = self._banner_media_dir() / banner_id
+        banner_dir.mkdir(parents=True, exist_ok=True)
+        file_path = banner_dir / filename
+        file_path.write_bytes(image_bytes)
+        return f"/media/hero_banners/{banner_id}/{filename}"
+
+    def delete_banner_media(self, banner_id: str) -> None:
+        if self._is_s3():
+            client = self._s3_client()
+            bucket = self.settings.aws_s3_bucket
+            prefix = f"hero_banners/{banner_id}/"
+
+            continuation = None
+            while True:
+                list_kwargs = {"Bucket": bucket, "Prefix": prefix, "MaxKeys": 1000}
+                if continuation:
+                    list_kwargs["ContinuationToken"] = continuation
+                response = client.list_objects_v2(**list_kwargs)
+
+                contents = response.get("Contents", [])
+                if contents:
+                    client.delete_objects(
+                        Bucket=bucket,
+                        Delete={"Objects": [{"Key": obj["Key"]} for obj in contents], "Quiet": True},
+                    )
+
+                if not response.get("IsTruncated"):
+                    break
+                continuation = response.get("NextContinuationToken")
+            return
+
+        banner_dir = self._banner_media_dir() / banner_id
+        if banner_dir.exists():
+            for child in banner_dir.iterdir():
+                if child.is_file():
+                    child.unlink()
+            banner_dir.rmdir()

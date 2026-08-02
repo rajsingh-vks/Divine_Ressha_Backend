@@ -24,6 +24,7 @@ from app.routes import (
     permissions,
     products,
     razorpay_checkout,
+    ritual_showcase,
     roles,
     users,
     wishlist,
@@ -110,6 +111,10 @@ app.include_router(hero_banners.router)
 app.include_router(hero_banners.router, prefix="/api")
 app.include_router(hero_banners.router, prefix="/api/admin")
 app.include_router(hero_banners.router, prefix="/admin")
+app.include_router(ritual_showcase.router)
+app.include_router(ritual_showcase.router, prefix="/api")
+app.include_router(ritual_showcase.router, prefix="/api/admin")
+app.include_router(ritual_showcase.router, prefix="/admin")
 app.include_router(users.router)
 app.include_router(roles.router)
 app.include_router(permissions.router)

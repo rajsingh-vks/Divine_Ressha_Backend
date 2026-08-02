@@ -22,6 +22,11 @@ class ProductImageStorage:
         media_dir.mkdir(parents=True, exist_ok=True)
         return media_dir
 
+    def _ritual_showcase_media_dir(self) -> Path:
+        media_dir = self.project_root / "media" / "ritual_showcase"
+        media_dir.mkdir(parents=True, exist_ok=True)
+        return media_dir
+
     def _s3_client(self):
         if not self.settings.aws_s3_bucket:
             raise ValueError("AWS_S3_BUCKET is required when MEDIA_BACKEND=s3")
@@ -155,3 +160,61 @@ class ProductImageStorage:
                 if child.is_file():
                     child.unlink()
             banner_dir.rmdir()
+
+    def save_ritual_showcase_image(
+        self,
+        item_id: str,
+        filename: str,
+        image_bytes: bytes,
+        content_type: str | None,
+    ) -> str:
+        if self._is_s3():
+            key = f"ritual_showcase/{item_id}/{filename}"
+            client = self._s3_client()
+            put_kwargs = {
+                "Bucket": self.settings.aws_s3_bucket,
+                "Key": key,
+                "Body": image_bytes,
+            }
+            if content_type:
+                put_kwargs["ContentType"] = content_type
+            client.put_object(**put_kwargs)
+            return self._s3_public_url(key)
+
+        item_dir = self._ritual_showcase_media_dir() / item_id
+        item_dir.mkdir(parents=True, exist_ok=True)
+        file_path = item_dir / filename
+        file_path.write_bytes(image_bytes)
+        return f"/media/ritual_showcase/{item_id}/{filename}"
+
+    def delete_ritual_showcase_media(self, item_id: str) -> None:
+        if self._is_s3():
+            client = self._s3_client()
+            bucket = self.settings.aws_s3_bucket
+            prefix = f"ritual_showcase/{item_id}/"
+
+            continuation = None
+            while True:
+                list_kwargs = {"Bucket": bucket, "Prefix": prefix, "MaxKeys": 1000}
+                if continuation:
+                    list_kwargs["ContinuationToken"] = continuation
+                response = client.list_objects_v2(**list_kwargs)
+
+                contents = response.get("Contents", [])
+                if contents:
+                    client.delete_objects(
+                        Bucket=bucket,
+                        Delete={"Objects": [{"Key": obj["Key"]} for obj in contents], "Quiet": True},
+                    )
+
+                if not response.get("IsTruncated"):
+                    break
+                continuation = response.get("NextContinuationToken")
+            return
+
+        item_dir = self._ritual_showcase_media_dir() / item_id
+        if item_dir.exists():
+            for child in item_dir.iterdir():
+                if child.is_file():
+                    child.unlink()
+            item_dir.rmdir()

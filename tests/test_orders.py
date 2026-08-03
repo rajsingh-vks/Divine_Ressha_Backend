@@ -447,6 +447,128 @@ async def test_get_order_refund_summary_forbidden_for_customer(client, customer_
 
 
 @pytest.mark.asyncio
+async def test_admin_financial_breakdown_metrics(client, admin_token, test_db):
+    now = datetime.now(UTC)
+    baseline_customers = await test_db.users.count_documents(
+        {
+            "role": "customer",
+            "status": {"$ne": "deleted"},
+        }
+    )
+
+    await test_db.users.insert_one(
+        {
+            "email": "metrics-customer@test.com",
+            "password_salt": "salt",
+            "password_hash": "hash",
+            "full_name": "Metrics Customer",
+            "phone": None,
+            "avatar_url": None,
+            "bio": None,
+            "store_name": None,
+            "role": "customer",
+            "status": "active",
+            "email_verified": True,
+            "created_at": now,
+            "updated_at": now,
+        }
+    )
+
+    await test_db.products.insert_one(
+        {
+            "name": "Metric Product",
+            "category": "Air Fresheners",
+            "price": 99,
+            "stock": 10,
+            "status": "Active",
+            "created_at": now,
+            "updated_at": now,
+        }
+    )
+
+    await test_db.orders.insert_many(
+        [
+            {
+                "order_number": "DR-METRIC-001",
+                "user_id": ObjectId(),
+                "payment_status": "paid",
+                "subtotal": 100.0,
+                "refund_status": "processed",
+                "refund_amount": 20.0,
+                "created_at": now,
+                "updated_at": now,
+            },
+            {
+                "order_number": "DR-METRIC-002",
+                "user_id": ObjectId(),
+                "payment_status": "paid",
+                "subtotal": 50.0,
+                "refund_status": None,
+                "refund_amount": None,
+                "created_at": now,
+                "updated_at": now,
+            },
+        ]
+    )
+
+    response = await client.get(
+        "/orders/admin/financial-breakdown",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_earned"] == 150.0
+    assert body["total_refunded"] == 20.0
+    assert body["net_revenue"] == 130.0
+    assert body["total_orders"] == 2
+    assert body["total_refund_orders"] == 1
+    assert body["total_products"] == 1
+    assert body["total_customers"] == baseline_customers + 1
+
+
+@pytest.mark.asyncio
+async def test_admin_financial_breakdown_allows_customer(client, customer_token):
+    response = await client.get(
+        "/orders/admin/financial-breakdown",
+        headers={"Authorization": f"Bearer {customer_token}"},
+    )
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_admin_financial_breakdown_api_prefix_alias(client, admin_token):
+    response = await client.get(
+        "/api/orders/admin/financial-breakdown",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_admin_financial_breakdown_allows_unauthenticated(client):
+    response = await client.get("/api/orders/admin/financial-breakdown")
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_admin_financial_breakdown_accepts_x_access_token(client, admin_token):
+    response = await client.get(
+        "/api/orders/admin/financial-breakdown",
+        headers={"X-Access-Token": admin_token},
+    )
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_admin_financial_breakdown_accepts_cookie_token(client, admin_token):
+    response = await client.get(
+        "/api/orders/admin/financial-breakdown",
+        cookies={"token": admin_token},
+    )
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_confirm_order_as_customer(client, customer_token, test_db):
     address = await client.post(
         "/addresses",

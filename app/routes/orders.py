@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, sta
 from app.config import get_settings
 from app.dependencies import get_current_user, require_role
 from app.schemas.orders import (
+    AdminFinancialBreakdownOut,
     AddressSnapshot,
     OrderConfirmRequest,
     OrderConfirmationOut,
@@ -146,6 +147,51 @@ async def my_order_history(
     )
     items = await cursor.to_list(length=limit)
     return [_serialize_order(item) for item in items]
+
+
+@router.get("/financial-breakdown", response_model=AdminFinancialBreakdownOut)
+@router.get("/admin/financial-breakdown", response_model=AdminFinancialBreakdownOut)
+async def admin_financial_breakdown(
+    request: Request,
+):
+    db = request.app.state.mongo_db
+
+    earned_rows = await db.orders.aggregate(
+        [
+            {"$match": {"payment_status": "paid"}},
+            {"$group": {"_id": None, "amount": {"$sum": {"$toDouble": {"$ifNull": ["$subtotal", 0]}}}}},
+        ]
+    ).to_list(length=1)
+    total_earned = float(earned_rows[0]["amount"]) if earned_rows else 0.0
+
+    refunded_rows = await db.orders.aggregate(
+        [
+            {"$match": {"refund_status": "processed"}},
+            {"$group": {"_id": None, "amount": {"$sum": {"$toDouble": {"$ifNull": ["$refund_amount", 0]}}}}},
+        ]
+    ).to_list(length=1)
+    total_refunded = float(refunded_rows[0]["amount"]) if refunded_rows else 0.0
+
+    total_orders = await db.orders.count_documents({})
+    total_refund_orders = await db.orders.count_documents({"refund_status": "processed"})
+    total_products = await db.products.count_documents({})
+    total_customers = await db.users.count_documents(
+        {
+            "role": "customer",
+            "status": {"$ne": "deleted"},
+        }
+    )
+
+    return AdminFinancialBreakdownOut(
+        total_earned=round(total_earned, 2),
+        total_refunded=round(total_refunded, 2),
+        net_revenue=round(total_earned - total_refunded, 2),
+        total_orders=total_orders,
+        total_refund_orders=total_refund_orders,
+        total_products=total_products,
+        total_customers=total_customers,
+        currency=settings.razorpay_currency,
+    )
 
 
 @router.get("/{order_id}", response_model=OrderOut)

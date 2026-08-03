@@ -173,3 +173,14 @@ class OrderConfirmationOut(BaseModel):
     order_id: str
     order_number: str
     invoice_url: str
+
+
+class AdminFinancialBreakdownOut(BaseModel):
+    total_earned: float
+    total_refunded: float
+    net_revenue: float
+    total_orders: int
+    total_refund_orders: int
+    total_products: int
+    total_customers: int
+    currency: str = "INR"

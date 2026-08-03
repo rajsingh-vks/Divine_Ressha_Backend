@@ -20,19 +20,29 @@ def _extract_bearer_token(authorization: str | None) -> str:
             detail="Authentication credentials were not provided.",
         )
 
-    prefix = "bearer "
-    if not authorization.lower().startswith(prefix):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid authorization scheme.",
-        )
+    value = authorization.strip()
+    lower_value = value.lower()
 
-    token = authorization[len(prefix) :].strip()
+    if lower_value.startswith("bearer "):
+        token = value[7:].strip()
+    elif lower_value.startswith("token "):
+        token = value[6:].strip()
+    else:
+        # Accept raw token value for client compatibility.
+        token = value
+
     if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication token is missing.",
         )
+
+    if " " in token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authorization scheme.",
+        )
+
     return token
 
 
@@ -40,8 +50,15 @@ def _extract_token_from_cookies(request: Request) -> str | None:
     for cookie_name in (
         "divine_admin_auth_token",
         "divine_auth_token",
+        "divine_admin_token",
+        "divine_token",
         "access_token",
+        "admin_access_token",
+        "admin_token",
+        "adminAuthToken",
+        "authToken",
         "auth_token",
+        "token",
     ):
         token = (request.cookies.get(cookie_name) or "").strip()
         if token:
@@ -52,6 +69,8 @@ def _extract_token_from_cookies(request: Request) -> str | None:
 async def get_current_session(
     request: Request,
     authorization: str | None = Header(default=None),
+    x_access_token: str | None = Header(default=None, alias="X-Access-Token"),
+    x_auth_token: str | None = Header(default=None, alias="X-Auth-Token"),
 ):
     token_candidates: list[str] = []
 
@@ -60,6 +79,11 @@ async def get_current_session(
             token_candidates.append(_extract_bearer_token(authorization))
         except HTTPException:
             pass
+
+    for header_token in (x_access_token, x_auth_token):
+        token = (header_token or "").strip()
+        if token and token not in token_candidates:
+            token_candidates.append(token)
 
     cookie_token = _extract_token_from_cookies(request)
     if cookie_token and cookie_token not in token_candidates:

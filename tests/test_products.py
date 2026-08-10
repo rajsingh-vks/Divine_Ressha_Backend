@@ -45,12 +45,56 @@ async def test_create_product_as_admin_with_image(client, admin_token):
     assert payload["price"] == 24.99
     assert payload["status"] == "Active"
     assert payload["image_url"] is not None
+    assert payload["images"] == [payload["image_url"]]
     image_url = payload["image_url"]
     assert (
         "/media/products/" in image_url
         or "/api/media/products/" in image_url
         or "amazonaws.com/products/" in image_url
     )
+
+
+@pytest.mark.asyncio
+async def test_create_product_as_admin_with_multiple_images(client, admin_token):
+    response = await client.post(
+        "/products",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        data={"name": "Gallery Product", "category": "Air Fresheners"},
+        files=[
+            ("images", ("front.jpg", b"front-image", "image/jpeg")),
+            ("images", ("side.png", b"side-image", "image/png")),
+        ],
+    )
+
+    assert response.status_code == 201
+    payload = response.json()
+    assert len(payload["images"]) == 2
+    assert payload["image_url"] == payload["images"][0]
+
+
+@pytest.mark.asyncio
+async def test_update_product_replaces_gallery_with_multiple_images(client, admin_token):
+    create_response = await client.post(
+        "/products",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        data={"name": "Gallery Product", "category": "Air Fresheners"},
+        files={"image": ("old.jpg", b"old-image", "image/jpeg")},
+    )
+    product_id = create_response.json()["id"]
+
+    response = await client.put(
+        f"/products/{product_id}",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        files=[
+            ("images", ("front.jpg", b"front-image", "image/jpeg")),
+            ("images", ("back.jpg", b"back-image", "image/jpeg")),
+        ],
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["images"]) == 2
+    assert payload["image_url"] == payload["images"][0]
 
 
 @pytest.mark.asyncio

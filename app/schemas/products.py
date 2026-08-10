@@ -17,6 +17,8 @@ class ProductOut(BaseModel):
     stock: int = 0
     sku: str | None = None
     status: str = "Active"
+    # `image_url` remains the primary image for older storefront consumers.
     image_url: str | None = None
+    images: list[str] = []
     created_at: datetime
     updated_at: datetime

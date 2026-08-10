@@ -18,6 +18,7 @@ storage = ProductImageStorage(settings=settings, project_root=Path(__file__).res
 
 ALLOWED_STATUSES = {"Active", "Draft", "Archived"}
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
+MAX_PRODUCT_IMAGES = 5
 
 
 def _to_object_id(value: str) -> ObjectId:
@@ -103,6 +104,22 @@ def _normalize_image_url(request: Request, raw_url: str | None) -> str | None:
 
 
 def _serialize_product(document: dict, request: Request) -> ProductOut:
+    raw_images = document.get("images")
+    if not isinstance(raw_images, list):
+        raw_images = []
+
+    # Products created before gallery support have only image_url.  Expose it
+    # as a one-item gallery so clients can use one response shape for all products.
+    if not raw_images and document.get("image_url"):
+        raw_images = [document["image_url"]]
+
+    images = [
+        normalized
+        for raw_url in raw_images
+        if isinstance(raw_url, str)
+        if (normalized := _normalize_image_url(request, raw_url)) is not None
+    ]
+
     return ProductOut(
         id=str(document["_id"]),
         name=document["name"],
@@ -117,7 +134,8 @@ def _serialize_product(document: dict, request: Request) -> ProductOut:
         stock=int(document.get("stock") or 0),
         sku=document.get("sku"),
         status=document.get("status", "Active"),
-        image_url=_normalize_image_url(request, document.get("image_url")),
+        image_url=images[0] if images else _normalize_image_url(request, document.get("image_url")),
+        images=images,
         created_at=document["created_at"],
         updated_at=document["updated_at"],
     )
@@ -150,6 +168,21 @@ async def _save_uploaded_image(product_id: ObjectId, image: UploadFile) -> str:
     )
 
 
+def _uploaded_images(image: UploadFile | None, images: list[UploadFile]) -> list[UploadFile]:
+    """Accept the legacy `image` field as well as repeated `images` fields."""
+    uploads = [*images]
+    if image is not None:
+        uploads.insert(0, image)
+    uploads = [upload for upload in uploads if upload.filename]
+
+    if len(uploads) > MAX_PRODUCT_IMAGES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"A product can have at most {MAX_PRODUCT_IMAGES} images.",
+        )
+    return uploads
+
+
 def _remove_product_media_dir(product_id: ObjectId) -> None:
     storage.delete_product_media(str(product_id))
 
@@ -170,6 +203,7 @@ async def create_product(
     sku: str | None = Form(default=None),
     product_status: str = Form(default="Active", alias="status"),
     image: UploadFile | None = File(default=None),
+    images: list[UploadFile] = File(default=[]),
     _admin_user=Depends(require_role("admin")),
 ):
     name = (name or "").strip()
@@ -193,10 +227,8 @@ async def create_product(
     db = request.app.state.mongo_db
     now = datetime.now(UTC)
     product_id = ObjectId()
-    image_url: str | None = None
-
-    if image and image.filename:
-        image_url = await _save_uploaded_image(product_id, image)
+    uploaded_images = _uploaded_images(image, images)
+    image_urls = [await _save_uploaded_image(product_id, upload) for upload in uploaded_images]
 
     document = {
         "_id": product_id,
@@ -212,7 +244,8 @@ async def create_product(
         "stock": int(stock),
         "sku": _normalize_text(sku),
         "status": product_status,
-        "image_url": image_url,
+        "image_url": image_urls[0] if image_urls else None,
+        "images": image_urls,
         "created_at": now,
         "updated_at": now,
     }
@@ -267,6 +300,7 @@ async def update_product(
     sku: str | None = Form(default=None),
     product_status: str | None = Form(default=None, alias="status"),
     image: UploadFile | None = File(default=None),
+    images: list[UploadFile] = File(default=[]),
     _admin_user=Depends(require_role("admin")),
 ):
     db = request.app.state.mongo_db
@@ -323,9 +357,14 @@ async def update_product(
             )
         updates["status"] = normalized_status
 
-    if image and image.filename:
+    uploaded_images = _uploaded_images(image, images)
+    if uploaded_images:
+        # Uploading one or more images replaces the gallery.  Existing media is
+        # retained when this field is omitted, allowing metadata-only edits.
         _remove_product_media_dir(product_obj_id)
-        updates["image_url"] = await _save_uploaded_image(product_obj_id, image)
+        image_urls = [await _save_uploaded_image(product_obj_id, upload) for upload in uploaded_images]
+        updates["images"] = image_urls
+        updates["image_url"] = image_urls[0]
 
     updates["updated_at"] = datetime.now(UTC)
     await db.products.update_one({"_id": product_obj_id}, {"$set": updates})

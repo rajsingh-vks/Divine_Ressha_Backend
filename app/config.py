@@ -64,6 +64,12 @@ class Settings:
             self.otp_expose_codes = otp_expose_codes_raw.strip().lower() in {"1", "true", "yes", "on"}
 
         self.email_delivery_backend = getenv("EMAIL_DELIVERY_BACKEND", "console").strip().lower() or "console"
+        self.support_email = (
+            getenv("SUPPORT_EMAIL", "").strip()
+            or getenv("SUPPORT_MAIL", "").strip()
+            or getenv("SES_FROM_EMAIL", "").strip()
+            or "support@divineressha.com"
+        )
         self.ses_from_email = getenv("SES_FROM_EMAIL", "").strip() or None
         self.ses_configuration_set = getenv("SES_CONFIGURATION_SET", "").strip() or None
         self.smtp_host = getenv("SMTP_HOST", "").strip() or None

@@ -79,6 +79,141 @@ async def test_place_order_from_cart(client, customer_token, test_db):
 
 
 @pytest.mark.asyncio
+async def test_place_order_sends_customer_and_support_emails(client, customer_token, test_db, monkeypatch):
+    import app.routes.orders as orders_module
+
+    orders_module.settings.support_email = "support@divineressha.com"
+    captured = {}
+
+    def fake_customer_email(settings_obj, recipient, order):
+        captured["customer"] = {"recipient": recipient, "order_number": order["order_number"]}
+        return True, None
+
+    def fake_support_email(settings_obj, recipient, order, customer_email):
+        captured["support"] = {
+            "recipient": recipient,
+            "order_number": order["order_number"],
+            "customer_email": customer_email,
+        }
+        return True, None
+
+    monkeypatch.setattr(orders_module, "send_order_confirmation_email", fake_customer_email)
+    monkeypatch.setattr(orders_module, "send_order_placed_support_email", fake_support_email)
+
+    address = await client.post(
+        "/addresses",
+        headers={"Authorization": f"Bearer {customer_token}"},
+        json={
+            "full_name": "Mail User",
+            "phone": "+1-555-000-2222",
+            "line1": "Main Street 2",
+            "city": "Austin",
+            "state": "TX",
+            "postal_code": "73302",
+            "country": "US",
+            "address_type": "home",
+            "is_default": True,
+        },
+    )
+    product_id = await _create_product(test_db, price=75.0)
+    await client.post(
+        "/cart",
+        headers={"Authorization": f"Bearer {customer_token}"},
+        json={"product_id": product_id, "quantity": 1},
+    )
+
+    response = await client.post(
+        "/orders",
+        headers={"Authorization": f"Bearer {customer_token}"},
+        json={"address_id": address.json()["id"], "notes": "Please confirm"},
+    )
+
+    assert response.status_code == 201
+    assert captured["customer"]["recipient"] == "customer@test.com"
+    assert captured["customer"]["order_number"] == response.json()["order_number"]
+    assert captured["support"]["recipient"] == "support@divineressha.com"
+    assert captured["support"]["customer_email"] == "customer@test.com"
+    assert captured["support"]["order_number"] == response.json()["order_number"]
+
+
+@pytest.mark.asyncio
+async def test_verify_razorpay_payment_sends_customer_and_support_emails(client, customer_token, test_db, monkeypatch):
+    import app.routes.payments as payments_module
+
+    payments_module.settings.support_email = "support@divineressha.com"
+    captured = {}
+
+    class FakeUtility:
+        @staticmethod
+        def verify_payment_signature(payload):
+            return True
+
+    class FakeClient:
+        utility = FakeUtility()
+
+    def fake_customer_email(settings_obj, recipient, order):
+        captured["customer"] = {"recipient": recipient, "order_number": order["order_number"]}
+        return True, None
+
+    def fake_support_email(settings_obj, recipient, order, customer_email):
+        captured["support"] = {
+            "recipient": recipient,
+            "order_number": order["order_number"],
+            "customer_email": customer_email,
+        }
+        return True, None
+
+    monkeypatch.setattr(payments_module, "_razorpay_client", lambda: FakeClient())
+    monkeypatch.setattr(payments_module, "send_order_confirmation_email", fake_customer_email)
+    monkeypatch.setattr(payments_module, "send_order_placed_support_email", fake_support_email)
+
+    address = await client.post(
+        "/addresses",
+        headers={"Authorization": f"Bearer {customer_token}"},
+        json={
+            "full_name": "Pay User",
+            "phone": "+1-555-321-4321",
+            "line1": "Payment Street 7",
+            "city": "Houston",
+            "state": "TX",
+            "postal_code": "77001",
+            "country": "US",
+            "address_type": "home",
+            "is_default": True,
+        },
+    )
+    product_id = await _create_product(test_db, price=150.0)
+    await client.post(
+        "/cart",
+        headers={"Authorization": f"Bearer {customer_token}"},
+        json={"product_id": product_id, "quantity": 1},
+    )
+    created = await client.post(
+        "/orders",
+        headers={"Authorization": f"Bearer {customer_token}"},
+        json={"address_id": address.json()["id"]},
+    )
+    order_id = created.json()["id"]
+
+    response = await client.post(
+        "/payments/razorpay/verify",
+        headers={"Authorization": f"Bearer {customer_token}"},
+        json={
+            "order_id": order_id,
+            "razorpay_order_id": "pay_order_123",
+            "razorpay_payment_id": "pay_payment_123",
+            "razorpay_signature": "valid-signature",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["customer"]["recipient"] == "customer@test.com"
+    assert captured["customer"]["order_number"] == response.json()["backend_order_id"] or created.json()["order_number"]
+    assert captured["support"]["recipient"] == "support@divineressha.com"
+    assert captured["support"]["customer_email"] == "customer@test.com"
+
+
+@pytest.mark.asyncio
 async def test_get_orders_and_history(client, customer_token, test_db):
     address = await client.post(
         "/addresses",

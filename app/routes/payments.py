@@ -15,6 +15,10 @@ from app.schemas.payments import (
     RazorpayVerifyOut,
     RazorpayVerifyRequest,
 )
+from app.services.notifications import (
+    send_order_confirmation_email,
+    send_order_placed_support_email,
+)
 
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
@@ -204,6 +208,20 @@ async def verify_razorpay_payment(
         },
         upsert=True,
     )
+
+    updated_order = await db.orders.find_one({"_id": order["_id"]})
+    user = await db.users.find_one({"_id": order["user_id"]})
+    customer_email = (user or {}).get("email")
+    if customer_email:
+        send_order_confirmation_email(settings, customer_email, updated_order)
+
+    support_email = (
+        getattr(settings, "support_email", None)
+        or getattr(settings, "ses_from_email", None)
+        or getattr(settings, "smtp_from_email", None)
+    )
+    if support_email and customer_email:
+        send_order_placed_support_email(settings, support_email, updated_order, customer_email)
 
     return RazorpayVerifyOut(
         success=True,

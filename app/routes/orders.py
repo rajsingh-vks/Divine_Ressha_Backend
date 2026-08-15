@@ -24,6 +24,7 @@ from app.schemas.orders import (
     OrderStatusHistory,
     OrderStatusUpdate,
 )
+from app.services.notifications import send_order_confirmation_email, send_order_placed_support_email
 
 
 router = APIRouter(prefix="/orders", tags=["Orders"])
@@ -307,6 +308,16 @@ async def place_order(payload: OrderCreate, request: Request, current_user=Depen
 
     await db.cart.delete_many({"user_id": user_id})
     created = await db.orders.find_one({"_id": result.inserted_id})
+
+    user = await db.users.find_one({"_id": user_id})
+    customer_email = (user or {}).get("email")
+    if customer_email:
+        send_order_confirmation_email(settings, customer_email, created)
+
+    support_email = getattr(settings, "support_email", None) or getattr(settings, "ses_from_email", None) or getattr(settings, "smtp_from_email", None)
+    if support_email and customer_email:
+        send_order_placed_support_email(settings, support_email, created, customer_email)
+
     return _serialize_order(created)
 
 

@@ -8,10 +8,12 @@ import httpx
 import boto3
 from bson import ObjectId
 from reportlab.lib import colors
+from reportlab.lib.enums import TA_LEFT, TA_RIGHT
 from reportlab.lib.pagesizes import A4
+from reportlab.graphics.shapes import Circle, Drawing, String
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-from reportlab.pdfgen import canvas
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.lib.units import mm
+from reportlab.platypus import HRFlowable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 
 from app.config import get_settings
@@ -132,134 +134,313 @@ def _build_invoice_url(invoice_number: str) -> str:
     return path
 
 
+def _build_divine_logo_mark() -> Drawing:
+    logo_mark = Drawing(110, 110)
+    logo_mark.add(Circle(55, 55, 43, strokeColor=colors.HexColor("#D4AF68"), strokeWidth=3, fillColor=None))
+    logo_mark.add(String(55, 54, "✦", fontName="Times-BoldItalic", fontSize=18, textAnchor="middle", fillColor=colors.HexColor("#D4AF68")))
+    logo_mark.add(String(87, 83, "✦", fontName="Times-BoldItalic", fontSize=10, textAnchor="middle", fillColor=colors.HexColor("#D4AF68")))
+    logo_mark.add(String(22, 82, "✦", fontName="Times-BoldItalic", fontSize=10, textAnchor="middle", fillColor=colors.HexColor("#D4AF68")))
+    logo_mark.add(String(55, 20, "✦", fontName="Times-BoldItalic", fontSize=9, textAnchor="middle", fillColor=colors.HexColor("#D4AF68")))
+    logo_mark.add(String(55, 90, "✦", fontName="Times-BoldItalic", fontSize=9, textAnchor="middle", fillColor=colors.HexColor("#D4AF68")))
+    return logo_mark
+
+
 def _build_invoice_pdf_bytes(order: dict, user: dict | None = None) -> bytes:
     invoice_number = _build_invoice_number(order)
     user_name = (user or {}).get("full_name") or "Customer"
     shipping = order.get("shipping_address") or {}
     subtotal = float(order.get("subtotal", 0) or 0)
+    discount = float(order.get("discount", 0) or 0)
+    shipping_amount = float(order.get("shipping_amount") or order.get("shipping", 0) or 0)
+    total = float(order.get("total", subtotal - discount + shipping_amount) or (subtotal - discount + shipping_amount))
     items = order.get("items", [])
 
     buffer = BytesIO()
-    c = canvas.Canvas(buffer, pagesize=A4)
-    width, height = A4
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=18 * mm,
+        leftMargin=18 * mm,
+        topMargin=15 * mm,
+        bottomMargin=15 * mm,
+        title=f"Invoice {invoice_number}",
+    )
 
-    c.setFillColorRGB(0, 0, 0)
-    c.rect(0, 0, width, height, fill=1, stroke=0)
+    styles = getSampleStyleSheet()
 
-    emblem_x = width / 2
-    emblem_y = 735
-    emblem_r = 120
-    gold = (0.83, 0.67, 0.30)
-    teal = (0.10, 0.45, 0.43)
-    teal_deep = (0.07, 0.36, 0.34)
-    pink = (0.92, 0.72, 0.74)
-    cream = (0.96, 0.90, 0.80)
+    brand_style = ParagraphStyle(
+        "Brand",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=10,
+        leading=12,
+        textColor=colors.HexColor("#2C4E4A"),
+        alignment=1,
+    )
 
-    c.setStrokeColorRGB(*gold)
-    c.setFillColorRGB(*teal)
-    c.setLineWidth(5)
-    c.circle(emblem_x, emblem_y, emblem_r, stroke=1, fill=1)
-    c.setFillColorRGB(*teal_deep)
-    c.circle(emblem_x, emblem_y, emblem_r - 18, stroke=0, fill=1)
+    wordmark_style = ParagraphStyle(
+        "Wordmark",
+        parent=styles["Heading1"],
+        fontName="Times-Bold",
+        fontSize=30,
+        leading=32,
+        textColor=colors.HexColor("#0F6E6B"),
+        alignment=1,
+        spaceAfter=8,
+    )
 
-    c.setFillColorRGB(*pink)
-    c.setStrokeColorRGB(*pink)
-    c.setLineWidth(10)
-    c.arc(emblem_x - 60, emblem_y - 80, emblem_x + 80, emblem_y + 110, 200, 140)
-    c.arc(emblem_x - 20, emblem_y - 78, emblem_x + 120, emblem_y + 108, 245, 120)
-    c.circle(emblem_x + 8, emblem_y + 18, 14, fill=1, stroke=0)
+    tagline_style = ParagraphStyle(
+        "Tagline",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=11,
+        leading=14,
+        textColor=colors.HexColor("#0F6E6B"),
+        alignment=1,
+        letterSpace=1.5,
+    )
 
-    c.setFillColorRGB(*cream)
-    c.setStrokeColorRGB(*gold)
-    c.setLineWidth(2)
-    c.drawRightString(emblem_x + 80, emblem_y + 95, "✦")
-    c.drawRightString(emblem_x - 95, emblem_y + 110, "✦")
-    c.drawRightString(emblem_x + 60, emblem_y - 100, "✦")
+    invoice_style = ParagraphStyle(
+        "Invoice",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=18,
+        alignment=TA_RIGHT,
+        textColor=colors.HexColor("#37261E"),
+    )
 
-    c.setFillColorRGB(*teal)
-    c.setStrokeColorRGB(*gold)
-    c.setLineWidth(4)
-    left_path = c.beginPath()
-    left_path.moveTo(emblem_x - 118, emblem_y - 20)
-    left_path.curveTo(emblem_x - 180, emblem_y - 45, emblem_x - 155, emblem_y - 110, emblem_x - 82, emblem_y - 125)
-    left_path.curveTo(emblem_x - 120, emblem_y - 145, emblem_x - 155, emblem_y - 105, emblem_x - 130, emblem_y - 62)
-    left_path.close()
-    c.drawPath(left_path, fill=1, stroke=1)
+    logo_mark = _build_divine_logo_mark()
 
-    right_path = c.beginPath()
-    right_path.moveTo(emblem_x + 118, emblem_y - 20)
-    right_path.curveTo(emblem_x + 180, emblem_y - 45, emblem_x + 155, emblem_y - 110, emblem_x + 82, emblem_y - 125)
-    right_path.curveTo(emblem_x + 120, emblem_y - 145, emblem_x + 155, emblem_y - 105, emblem_x + 130, emblem_y - 62)
-    right_path.close()
-    c.drawPath(right_path, fill=1, stroke=1)
+    normal_style = ParagraphStyle(
+        "NormalCustom",
+        parent=styles["Normal"],
+        fontSize=9,
+        leading=13,
+        textColor=colors.HexColor("#333333"),
+    )
 
-    c.setFillColorRGB(0.15, 0.49, 0.46)
-    c.setFont("Helvetica-Bold", 46)
-    c.drawCentredString(width / 2, 532, "DIVINE RESSHA")
+    small_style = ParagraphStyle(
+        "Small",
+        parent=styles["Normal"],
+        fontSize=8,
+        leading=11,
+        textColor=colors.HexColor("#777777"),
+    )
 
-    c.setStrokeColorRGB(*gold)
-    c.setLineWidth(2)
-    c.line(110, 490, 490, 490)
-    c.setFillColorRGB(*gold)
-    c.setFont("Helvetica-Bold", 14)
-    c.drawCentredString(width / 2, 455, "BEAUTY • HEALING • HARMONY")
+    story = []
 
-    c.setFillColorRGB(1, 1, 1)
-    c.rect(54, 145, 490, 110, fill=1, stroke=0)
-    c.setFillColorRGB(0.83, 0.67, 0.30)
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(74, 228, "INVOICE")
-    c.setFillColorRGB(0.15, 0.16, 0.17)
-    c.setFont("Helvetica", 10)
-    c.drawString(74, 210, f"Invoice No: {invoice_number}")
-    c.drawString(74, 196, f"Order No: {order.get('order_number', 'N/A')}")
-    c.drawString(74, 182, f"Customer: {user_name}")
-    c.drawString(300, 210, f"Date: {datetime.now(UTC).strftime('%d %b %Y')}")
+    logo_svg = """
+    <svg width="110" height="110" viewBox="0 0 110 110" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="gold" x1="18" y1="10" x2="90" y2="98" gradientUnits="userSpaceOnUse">
+          <stop stop-color="#F8E7B7"/>
+          <stop offset="0.45" stop-color="#D9B764"/>
+          <stop offset="1" stop-color="#B98746"/>
+        </linearGradient>
+      </defs>
+      <circle cx="55" cy="55" r="44" fill="none" stroke="url(#gold)" stroke-width="3.2"/>
+      <path d="M35 37C40.4 28.1 49.5 23 60 23C75.5 23 88 34.8 88 50C88 64.8 75.4 77 60 77H42V92H35V37ZM42 71H59C71.4 71 80 62.8 80 50C80 38.2 72.2 31 60 31C49.8 31 44.2 35.3 42 41.8V71Z" fill="url(#gold)"/>
+      <path d="M72 42C76.5 37.4 82.8 34.7 89.9 34.7C98.8 34.7 106.8 39.1 111.5 46.1C105.1 44.4 99.2 43.9 92.4 44.9C85.9 45.9 79.2 48.7 72 53.6V42Z" fill="url(#gold)" opacity="0.9"/>
+      <path d="M74 65C80.8 59.9 88.1 57.3 95.4 57.3C102.1 57.3 108.2 59.7 113 64.2C107.9 67.9 101.9 70.6 95.3 71.9C88.6 73.2 81.7 73 74 71.8V65Z" fill="url(#gold)" opacity="0.76"/>
+      <path d="M25 86C39 69.3 48 58.3 52.5 50.7C57.5 60.7 60.8 71.3 61.6 81.5C52.3 81.1 40.1 83 25 86Z" fill="#E7C9A8" opacity="0.9"/>
+    </svg>
+    """
 
-    shipping_line = (
-        f"Ship To: {shipping.get('full_name', '')}, {shipping.get('city', '')}, {shipping.get('state', '')}"
-    ).strip(', ')
-    c.drawString(300, 196, shipping_line[:45])
-    c.drawString(300, 182, f"Status: {order.get('status', 'Placed').title()}")
+    header = Table(
+        [
+            [
+                Table(
+                    [[logo_mark], [Paragraph("<font size='8'>BEAUTY • HEALING • HARMONY</font>", brand_style)]],
+                    colWidths=[70 * mm],
+                    rowHeights=[42 * mm, 10 * mm],
+                ),
+            ]
+        ],
+        colWidths=[160 * mm],
+    )
 
-    table_data = [["Product", "Qty", "Unit", "Total"]]
-    for item in items:
-        table_data.append([
-            str(item.get("name", "Product")),
-            str(int(item.get("quantity", 1) or 1)),
-            f"₹{float(item.get('unit_price') or 0):.2f}",
-            f"₹{float(item.get('line_total') or 0):.2f}",
-        ])
-    table_data.append(["", "", "Total", f"₹{subtotal:.2f}"])
-
-    from reportlab.platypus import Table, TableStyle
-    table = Table(table_data, colWidths=[195, 55, 90, 90])
-    table.setStyle(
+    header.setStyle(
         TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f2dca5")),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#1b1b1b")),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("GRID", (0, 0), (-1, -1), 0.7, colors.HexColor("#d0b06d")),
-            ("ALIGN", (1, 1), (1, -1), "CENTER"),
-            ("ALIGN", (2, 1), (2, -1), "RIGHT"),
-            ("ALIGN", (3, 1), (3, -1), "RIGHT"),
-            ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#fffaf2")]),
-            ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
-            ("TOPPADDING", (0, 0), (-1, 0), 8),
-            ("BOTTOMPADDING", (0, 1), (-1, -1), 6),
-            ("TOPPADDING", (0, 1), (-1, -1), 6),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
         ])
     )
-    table.wrapOn(c, width, height)
-    table.drawOn(c, 54, 60)
+    story.append(header)
+    story.append(Paragraph("DIVINE RESSHA", wordmark_style))
+    story.append(Paragraph("BEAUTY • HEALING • HARMONY", tagline_style))
+    story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#D7B470"), spaceBefore=6, spaceAfter=14))
+    story.append(
+        Table(
+            [[
+                Paragraph(
+                    f"<b>Order No:</b> {order.get('order_number', 'N/A')}<br/>"
+                    f"<b>Date:</b> {datetime.now(UTC).strftime('%d %b %Y')}<br/>"
+                    f"<b>Status:</b> {str(order.get('status', 'Placed')).title()}",
+                    normal_style,
+                ),
+                Paragraph(
+                    f"<b>Invoice No:</b> {invoice_number}<br/>"
+                    f"<b>Payment:</b> {order.get('payment_provider') or 'Cash'}<br/>"
+                    f"<b>Payment Status:</b> {str(order.get('payment_status', 'Unpaid')).title()}",
+                    normal_style,
+                ),
+            ]],
+            colWidths=[90 * mm, 80 * mm],
+        )
+    )
+    story.append(
+        HRFlowable(
+            width="100%",
+            thickness=0.7,
+            color=colors.HexColor("#D8C9BF"),
+            spaceBefore=3,
+            spaceAfter=15,
+        )
+    )
 
-    c.setFillColorRGB(0.83, 0.67, 0.30)
-    c.setFont("Helvetica-Bold", 14)
-    c.drawRightString(530, 50, f"TOTAL: ₹{subtotal:.2f}")
+    meta = Table(
+        [
+            [
+                Paragraph(
+                    f"<b>Order No:</b> {order.get('order_number', 'N/A')}<br/>"
+                    f"<b>Date:</b> {datetime.now(UTC).strftime('%d %b %Y')}<br/>"
+                    f"<b>Status:</b> {str(order.get('status', 'Placed')).title()}",
+                    normal_style,
+                ),
+                Paragraph(
+                    f"<b>Invoice No:</b> {invoice_number}<br/>"
+                    f"<b>Payment:</b> {order.get('payment_provider') or 'Cash'}<br/>"
+                    f"<b>Payment Status:</b> {str(order.get('payment_status', 'Unpaid')).title()}",
+                    normal_style,
+                ),
+            ]
+        ],
+        colWidths=[90 * mm, 80 * mm],
+    )
+    meta.setStyle(
+        TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 0),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+        ])
+    )
+    story.append(meta)
 
-    c.showPage()
-    c.save()
+    billing = Table(
+        [
+            [
+                Paragraph(
+                    "<b>BILL TO</b><br/><br/>"
+                    f"<b>{user_name}</b><br/>"
+                    f"{(user or {}).get('email', '')}<br/>"
+                    f"{(user or {}).get('phone', '')}",
+                    normal_style,
+                ),
+                Paragraph(
+                    "<b>SHIP TO</b><br/><br/>"
+                    f"<b>{shipping.get('full_name', '')}</b><br/>"
+                    f"{shipping.get('line1', '')}<br/>"
+                    f"{shipping.get('city', '')}, {shipping.get('state', '')}<br/>"
+                    f"{shipping.get('postal_code', '')}",
+                    normal_style,
+                ),
+            ]
+        ],
+        colWidths=[90 * mm, 80 * mm],
+    )
+    billing.setStyle(
+        TableStyle([
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#F8F4F1")),
+            ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#E3D8D0")),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 10),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 10),
+            ("TOPPADDING", (0, 0), (-1, -1), 10),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 10),
+        ])
+    )
+    story.append(billing)
+    story.append(Spacer(1, 15))
+
+    product_rows = [[
+        Paragraph("<b>ITEM</b>", small_style),
+        Paragraph("<b>QTY</b>", small_style),
+        Paragraph("<b>UNIT PRICE</b>", small_style),
+        Paragraph("<b>TOTAL</b>", small_style),
+    ]]
+
+    for item in items:
+        product_rows.append([
+            Paragraph(str(item.get("name", "Product")), normal_style),
+            Paragraph(str(int(item.get("quantity", 1) or 1)), normal_style),
+            Paragraph(f"₹{float(item.get('unit_price') or 0):.2f}", normal_style),
+            Paragraph(
+                f"₹{float(item.get('line_total') or 0):.2f}",
+                ParagraphStyle("Right", parent=normal_style, alignment=TA_RIGHT),
+            ),
+        ])
+
+    products = Table(product_rows, colWidths=[95 * mm, 18 * mm, 30 * mm, 27 * mm], repeatRows=1)
+    products.setStyle(
+        TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#37261E")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LINEBELOW", (0, 0), (-1, 0), 0.5, colors.HexColor("#37261E")),
+            ("LINEBELOW", (0, 1), (-1, -1), 0.4, colors.HexColor("#E5DDD7")),
+            ("TOPPADDING", (0, 0), (-1, -1), 8),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+            ("LEFTPADDING", (0, 0), (-1, -1), 6),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ])
+    )
+    story.append(products)
+    story.append(Spacer(1, 15))
+
+    totals = [
+        ["Subtotal", f"₹{subtotal:.2f}"],
+        ["Discount", f"- ₹{discount:.2f}"],
+        ["Shipping", f"₹{shipping_amount:.2f}"],
+        ["TOTAL", f"₹{total:.2f}"],
+    ]
+
+    totals_table = Table(totals, colWidths=[140 * mm, 30 * mm])
+    totals_table.setStyle(
+        TableStyle([
+            ("ALIGN", (1, 0), (1, -1), "RIGHT"),
+            ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+            ("FONTSIZE", (0, -1), (-1, -1), 13),
+            ("TEXTCOLOR", (0, -1), (-1, -1), colors.HexColor("#37261E")),
+            ("LINEABOVE", (0, -1), (-1, -1), 1, colors.HexColor("#37261E")),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+        ])
+    )
+    story.append(totals_table)
+    story.append(Spacer(1, 25))
+
+    story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#D8C9BF")))
+    story.append(Spacer(1, 10))
+    story.append(
+        Paragraph(
+            "<b>Thank you for choosing DIVINE RESSHA.</b><br/>"
+            "Beauty • Healing • Harmony<br/><br/>"
+            "<font size='7'>"
+            "This is a computer-generated invoice and does not require a signature."
+            "</font>",
+            ParagraphStyle(
+                "Footer",
+                parent=normal_style,
+                alignment=TA_LEFT,
+                textColor=colors.HexColor("#6F625B"),
+            ),
+        )
+    )
+
+    doc.build(story)
     return buffer.getvalue()
 
 

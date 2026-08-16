@@ -16,13 +16,12 @@ from app.config import Settings
 logger = logging.getLogger(__name__)
 
 
-def _brand_svg_data_uri(variant: str = "default") -> str:
+def _brand_svg_url(variant: str = "default") -> str:
     svg_name = "divine-reesha-logo-soft-gold.svg" if variant == "soft_gold" else "divine-reesha-logo.svg"
     svg_path = Path(__file__).resolve().parents[1] / "static" / "branding" / svg_name
     if not svg_path.exists():
         return ""
-    encoded = base64.b64encode(svg_path.read_bytes()).decode("ascii")
-    return f"data:image/svg+xml;base64,{encoded}"
+    return f"/branding/{svg_name}"
 
 
 def send_email_verification_code(settings: Settings, recipient: str, code: str) -> bool:
@@ -110,8 +109,8 @@ def _brand_order_html(
             "</div>"
         )
 
-    logo_data_uri = _brand_svg_data_uri("soft_gold")
-    header_logo = f"<img src=\"{logo_data_uri}\" alt=\"Divine Reesha\" style=\"display: block; width: 180px; max-width: 100%; height: auto; margin-bottom: 14px;\" />" if logo_data_uri else "<div style=\"font-size: 12px; letter-spacing: 2px; text-transform: uppercase; opacity: 0.9;\">Divine Reesha</div>"
+    logo_url = _brand_svg_url("soft_gold")
+    header_logo = f"<img src=\"{logo_url}\" alt=\"Divine Reesha\" style=\"display: block; width: 180px; max-width: 100%; height: auto; margin-bottom: 14px;\" />" if logo_url else "<div style=\"font-size: 12px; letter-spacing: 2px; text-transform: uppercase; opacity: 0.9;\">Divine Reesha</div>"
 
     return f"""<!DOCTYPE html>
 <html lang=\"en\">

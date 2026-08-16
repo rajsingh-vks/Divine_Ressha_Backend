@@ -3,11 +3,14 @@ from io import BytesIO
 from pathlib import Path as FilePath
 from random import randint
 
+import httpx
+
 import boto3
 from bson import ObjectId
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.pdfgen import canvas
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 
@@ -136,84 +139,127 @@ def _build_invoice_pdf_bytes(order: dict, user: dict | None = None) -> bytes:
     subtotal = float(order.get("subtotal", 0) or 0)
     items = order.get("items", [])
 
-    table_data = [["Product", "Qty", "Total"]]
+    buffer = BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+    width, height = A4
+
+    c.setFillColorRGB(0, 0, 0)
+    c.rect(0, 0, width, height, fill=1, stroke=0)
+
+    emblem_x = width / 2
+    emblem_y = 735
+    emblem_r = 120
+    gold = (0.83, 0.67, 0.30)
+    teal = (0.10, 0.45, 0.43)
+    teal_deep = (0.07, 0.36, 0.34)
+    pink = (0.92, 0.72, 0.74)
+    cream = (0.96, 0.90, 0.80)
+
+    c.setStrokeColorRGB(*gold)
+    c.setFillColorRGB(*teal)
+    c.setLineWidth(5)
+    c.circle(emblem_x, emblem_y, emblem_r, stroke=1, fill=1)
+    c.setFillColorRGB(*teal_deep)
+    c.circle(emblem_x, emblem_y, emblem_r - 18, stroke=0, fill=1)
+
+    c.setFillColorRGB(*pink)
+    c.setStrokeColorRGB(*pink)
+    c.setLineWidth(10)
+    c.arc(emblem_x - 60, emblem_y - 80, emblem_x + 80, emblem_y + 110, 200, 140)
+    c.arc(emblem_x - 20, emblem_y - 78, emblem_x + 120, emblem_y + 108, 245, 120)
+    c.circle(emblem_x + 8, emblem_y + 18, 14, fill=1, stroke=0)
+
+    c.setFillColorRGB(*cream)
+    c.setStrokeColorRGB(*gold)
+    c.setLineWidth(2)
+    c.drawRightString(emblem_x + 80, emblem_y + 95, "✦")
+    c.drawRightString(emblem_x - 95, emblem_y + 110, "✦")
+    c.drawRightString(emblem_x + 60, emblem_y - 100, "✦")
+
+    c.setFillColorRGB(*teal)
+    c.setStrokeColorRGB(*gold)
+    c.setLineWidth(4)
+    left_path = c.beginPath()
+    left_path.moveTo(emblem_x - 118, emblem_y - 20)
+    left_path.curveTo(emblem_x - 180, emblem_y - 45, emblem_x - 155, emblem_y - 110, emblem_x - 82, emblem_y - 125)
+    left_path.curveTo(emblem_x - 120, emblem_y - 145, emblem_x - 155, emblem_y - 105, emblem_x - 130, emblem_y - 62)
+    left_path.close()
+    c.drawPath(left_path, fill=1, stroke=1)
+
+    right_path = c.beginPath()
+    right_path.moveTo(emblem_x + 118, emblem_y - 20)
+    right_path.curveTo(emblem_x + 180, emblem_y - 45, emblem_x + 155, emblem_y - 110, emblem_x + 82, emblem_y - 125)
+    right_path.curveTo(emblem_x + 120, emblem_y - 145, emblem_x + 155, emblem_y - 105, emblem_x + 130, emblem_y - 62)
+    right_path.close()
+    c.drawPath(right_path, fill=1, stroke=1)
+
+    c.setFillColorRGB(0.15, 0.49, 0.46)
+    c.setFont("Helvetica-Bold", 46)
+    c.drawCentredString(width / 2, 532, "DIVINE RESSHA")
+
+    c.setStrokeColorRGB(*gold)
+    c.setLineWidth(2)
+    c.line(110, 490, 490, 490)
+    c.setFillColorRGB(*gold)
+    c.setFont("Helvetica-Bold", 14)
+    c.drawCentredString(width / 2, 455, "BEAUTY • HEALING • HARMONY")
+
+    c.setFillColorRGB(1, 1, 1)
+    c.rect(54, 145, 490, 110, fill=1, stroke=0)
+    c.setFillColorRGB(0.83, 0.67, 0.30)
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(74, 228, "INVOICE")
+    c.setFillColorRGB(0.15, 0.16, 0.17)
+    c.setFont("Helvetica", 10)
+    c.drawString(74, 210, f"Invoice No: {invoice_number}")
+    c.drawString(74, 196, f"Order No: {order.get('order_number', 'N/A')}")
+    c.drawString(74, 182, f"Customer: {user_name}")
+    c.drawString(300, 210, f"Date: {datetime.now(UTC).strftime('%d %b %Y')}")
+
+    shipping_line = (
+        f"Ship To: {shipping.get('full_name', '')}, {shipping.get('city', '')}, {shipping.get('state', '')}"
+    ).strip(', ')
+    c.drawString(300, 196, shipping_line[:45])
+    c.drawString(300, 182, f"Status: {order.get('status', 'Placed').title()}")
+
+    table_data = [["Product", "Qty", "Unit", "Total"]]
     for item in items:
         table_data.append([
-            item.get("name", "Product"),
-            str(item.get("quantity", 1)),
+            str(item.get("name", "Product")),
+            str(int(item.get("quantity", 1) or 1)),
+            f"₹{float(item.get('unit_price') or 0):.2f}",
             f"₹{float(item.get('line_total') or 0):.2f}",
         ])
-    table_data.append(["", "", f"₹{subtotal:.2f}"])
+    table_data.append(["", "", "Total", f"₹{subtotal:.2f}"])
 
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=A4,
-        rightMargin=36,
-        leftMargin=36,
-        topMargin=28,
-        bottomMargin=28,
-    )
-    styles = getSampleStyleSheet()
-    title_style = ParagraphStyle(
-        "InvoiceTitle",
-        parent=styles["Title"],
-        fontName="Helvetica-Bold",
-        fontSize=22,
-        textColor=colors.HexColor("#2d1b12"),
-        leading=28,
-        spaceAfter=12,
-    )
-    heading_style = ParagraphStyle(
-        "InvoiceHeading",
-        parent=styles["Heading2"],
-        fontName="Helvetica-Bold",
-        fontSize=12,
-        textColor=colors.HexColor("#4b2e22"),
-        spaceAfter=6,
-    )
-    normal_style = ParagraphStyle(
-        "InvoiceNormal",
-        parent=styles["Normal"],
-        fontName="Helvetica",
-        fontSize=10,
-        leading=14,
-        textColor=colors.black,
-    )
-
-    story = [
-        Paragraph("Divine Reesha", title_style),
-        Paragraph(f"Invoice: {invoice_number}", heading_style),
-        Spacer(1, 8),
-        Paragraph(f"Order Number: {order.get('order_number', 'N/A')}", normal_style),
-        Paragraph(f"Customer: {user_name}", normal_style),
-        Paragraph(
-            "Shipping: "
-            f"{shipping.get('full_name', '')}, {shipping.get('city', '')}, {shipping.get('state', '')}",
-            normal_style,
-        ),
-        Spacer(1, 16),
-    ]
-
-    table = Table(table_data, colWidths=[250, 70, 100])
+    from reportlab.platypus import Table, TableStyle
+    table = Table(table_data, colWidths=[195, 55, 90, 90])
     table.setStyle(
         TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f3e7dc")),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#2d1b12")),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f2dca5")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#1b1b1b")),
             ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("GRID", (0, 0), (-1, -1), 0.8, colors.HexColor("#d9c7b7")),
+            ("GRID", (0, 0), (-1, -1), 0.7, colors.HexColor("#d0b06d")),
             ("ALIGN", (1, 1), (1, -1), "CENTER"),
             ("ALIGN", (2, 1), (2, -1), "RIGHT"),
+            ("ALIGN", (3, 1), (3, -1), "RIGHT"),
             ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#fffaf5")]),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#fffaf2")]),
             ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
             ("TOPPADDING", (0, 0), (-1, 0), 8),
             ("BOTTOMPADDING", (0, 1), (-1, -1), 6),
             ("TOPPADDING", (0, 1), (-1, -1), 6),
         ])
     )
-    story.extend([table, Spacer(1, 20), Paragraph(f"Total: ₹{subtotal:.2f}", heading_style)])
-    doc.build(story)
+    table.wrapOn(c, width, height)
+    table.drawOn(c, 54, 60)
+
+    c.setFillColorRGB(0.83, 0.67, 0.30)
+    c.setFont("Helvetica-Bold", 14)
+    c.drawRightString(530, 50, f"TOTAL: ₹{subtotal:.2f}")
+
+    c.showPage()
+    c.save()
     return buffer.getvalue()
 
 

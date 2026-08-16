@@ -1,7 +1,14 @@
 from datetime import UTC, datetime, timedelta
+from io import BytesIO
+from pathlib import Path as FilePath
 from random import randint
 
+import boto3
 from bson import ObjectId
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 
 from app.config import get_settings
@@ -84,11 +91,133 @@ def _build_invoice_number(order: dict) -> str:
     return f"INV-{order.get('order_number', str(order['_id']))}"
 
 
+def _invoice_path(invoice_number: str) -> FilePath:
+    invoice_dir = FilePath(__file__).resolve().parents[2] / "media" / "invoices"
+    invoice_dir.mkdir(parents=True, exist_ok=True)
+    return invoice_dir / f"{invoice_number}.pdf"
+
+
+def _build_s3_invoice_url(invoice_number: str) -> str:
+    if settings.aws_s3_public_base_url:
+        return f"{settings.aws_s3_public_base_url.rstrip('/')}/invoices/{invoice_number}.pdf"
+    bucket = settings.aws_s3_bucket
+    region = settings.aws_region
+    if bucket:
+        if region:
+            return f"https://{bucket}.s3.{region}.amazonaws.com/invoices/{invoice_number}.pdf"
+        return f"https://{bucket}.s3.amazonaws.com/invoices/{invoice_number}.pdf"
+    return f"{settings.media_url_prefix}/invoices/{invoice_number}.pdf"
+
+
 def _build_invoice_url(invoice_number: str) -> str:
+    if settings.media_backend == "s3" and settings.aws_s3_bucket:
+        return _build_s3_invoice_url(invoice_number)
     path = f"{settings.media_url_prefix}/invoices/{invoice_number}.pdf"
     if settings.public_base_url:
         return f"{settings.public_base_url}{path}"
     return path
+
+
+def _build_invoice_pdf_bytes(order: dict, user: dict | None = None) -> bytes:
+    invoice_number = _build_invoice_number(order)
+    user_name = (user or {}).get("full_name") or "Customer"
+    shipping = order.get("shipping_address") or {}
+    subtotal = float(order.get("subtotal", 0) or 0)
+    items = order.get("items", [])
+
+    table_data = [["Product", "Qty", "Total"]]
+    for item in items:
+        table_data.append([
+            item.get("name", "Product"),
+            str(item.get("quantity", 1)),
+            f"₹{float(item.get('line_total') or 0):.2f}",
+        ])
+    table_data.append(["", "", f"₹{subtotal:.2f}"])
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=36,
+        leftMargin=36,
+        topMargin=28,
+        bottomMargin=28,
+    )
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle(
+        "InvoiceTitle",
+        parent=styles["Title"],
+        fontName="Helvetica-Bold",
+        fontSize=22,
+        textColor=colors.HexColor("#2d1b12"),
+        leading=28,
+        spaceAfter=12,
+    )
+    heading_style = ParagraphStyle(
+        "InvoiceHeading",
+        parent=styles["Heading2"],
+        fontName="Helvetica-Bold",
+        fontSize=12,
+        textColor=colors.HexColor("#4b2e22"),
+        spaceAfter=6,
+    )
+    normal_style = ParagraphStyle(
+        "InvoiceNormal",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=10,
+        leading=14,
+        textColor=colors.black,
+    )
+
+    story = [
+        Paragraph("Divine Reesha", title_style),
+        Paragraph(f"Invoice: {invoice_number}", heading_style),
+        Spacer(1, 8),
+        Paragraph(f"Order Number: {order.get('order_number', 'N/A')}", normal_style),
+        Paragraph(f"Customer: {user_name}", normal_style),
+        Paragraph(
+            "Shipping: "
+            f"{shipping.get('full_name', '')}, {shipping.get('city', '')}, {shipping.get('state', '')}",
+            normal_style,
+        ),
+        Spacer(1, 16),
+    ]
+
+    table = Table(table_data, colWidths=[250, 70, 100])
+    table.setStyle(
+        TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f3e7dc")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#2d1b12")),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("GRID", (0, 0), (-1, -1), 0.8, colors.HexColor("#d9c7b7")),
+            ("ALIGN", (1, 1), (1, -1), "CENTER"),
+            ("ALIGN", (2, 1), (2, -1), "RIGHT"),
+            ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#fffaf5")]),
+            ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
+            ("TOPPADDING", (0, 0), (-1, 0), 8),
+            ("BOTTOMPADDING", (0, 1), (-1, -1), 6),
+            ("TOPPADDING", (0, 1), (-1, -1), 6),
+        ])
+    )
+    story.extend([table, Spacer(1, 20), Paragraph(f"Total: ₹{subtotal:.2f}", heading_style)])
+    doc.build(story)
+    return buffer.getvalue()
+
+
+def _ensure_invoice_pdf(order: dict, user: dict | None = None) -> str:
+    invoice_number = _build_invoice_number(order)
+    local_path = _invoice_path(invoice_number)
+    if not local_path.exists():
+        local_path.write_bytes(_build_invoice_pdf_bytes(order, user))
+
+    if settings.media_backend == "s3" and settings.aws_s3_bucket:
+        key = f"invoices/{invoice_number}.pdf"
+        client = boto3.client("s3", region_name=settings.aws_region) if settings.aws_region else boto3.client("s3")
+        client.put_object(Bucket=settings.aws_s3_bucket, Key=key, Body=local_path.read_bytes(), ContentType="application/pdf")
+
+    return _build_invoice_url(invoice_number)
 
 
 def _serialize_tracking(order: dict) -> OrderTrackingOut:
@@ -593,8 +722,9 @@ async def get_order_invoice(
 
     now = datetime.now(UTC)
     invoice_number = _build_invoice_number(order)
+    user = await db.users.find_one({"_id": order["user_id"]})
+    invoice_url = _ensure_invoice_pdf(order, user)
     invoice_generated_at = order.get("invoice_generated_at") or now
-    invoice_url = _build_invoice_url(invoice_number)
 
     if not order.get("invoice_number"):
         await db.orders.update_one(
@@ -654,7 +784,8 @@ async def send_order_confirmation(
 
     now = datetime.now(UTC)
     invoice_number = _build_invoice_number(order)
-    invoice_url = _build_invoice_url(invoice_number)
+    user = await db.users.find_one({"_id": order["user_id"]})
+    invoice_url = _ensure_invoice_pdf(order, user)
     next_payment_status = payload.payment_status.strip().lower() if payload and payload.payment_status else (order.get("payment_status") or "unpaid")
     next_paid_at = payload.paid_at if payload and payload.paid_at else (now if next_payment_status == "paid" else order.get("paid_at"))
 

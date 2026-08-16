@@ -21,6 +21,17 @@ def send_email_verification_code(settings: Settings, recipient: str, code: str) 
 
 def _build_invoice_details(order: dict, settings: Settings) -> tuple[str, str]:
     invoice_number = order.get("invoice_number") or f"INV-{order.get('order_number', 'N/A')}"
+    if settings.media_backend == "s3" and settings.aws_s3_bucket:
+        if settings.aws_s3_public_base_url:
+            invoice_url = f"{settings.aws_s3_public_base_url.rstrip('/')}/invoices/{invoice_number}.pdf"
+        else:
+            bucket = settings.aws_s3_bucket
+            region = settings.aws_region
+            if region:
+                invoice_url = f"https://{bucket}.s3.{region}.amazonaws.com/invoices/{invoice_number}.pdf"
+            else:
+                invoice_url = f"https://{bucket}.s3.amazonaws.com/invoices/{invoice_number}.pdf"
+        return invoice_number, invoice_url
     path = f"{settings.media_url_prefix}/invoices/{invoice_number}.pdf"
     invoice_url = f"{settings.public_base_url}{path}" if settings.public_base_url else path
     return invoice_number, invoice_url

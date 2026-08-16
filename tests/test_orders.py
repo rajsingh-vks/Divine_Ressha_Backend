@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 import pytest_asyncio
@@ -796,6 +797,46 @@ async def test_get_order_invoice(client, customer_token, test_db):
     assert body["order_id"] == order_id
     assert body["invoice_number"].startswith("INV-")
     assert "/invoices/" in body["invoice_url"]
+
+
+@pytest.mark.asyncio
+async def test_get_order_invoice_generates_pdf_file(client, customer_token, test_db):
+    address = await client.post(
+        "/addresses",
+        headers={"Authorization": f"Bearer {customer_token}"},
+        json={
+            "full_name": "PDF User",
+            "phone": "+1-555-777-2222",
+            "line1": "PDF Address",
+            "city": "Pune",
+            "state": "MH",
+            "postal_code": "411001",
+            "country": "IN",
+            "address_type": "home",
+            "is_default": True,
+        },
+    )
+    product_id = await _create_product(test_db, price=90.0)
+    await client.post(
+        "/cart",
+        headers={"Authorization": f"Bearer {customer_token}"},
+        json={"product_id": product_id, "quantity": 1},
+    )
+    created = await client.post(
+        "/orders",
+        headers={"Authorization": f"Bearer {customer_token}"},
+        json={"address_id": address.json()["id"]},
+    )
+    order_id = created.json()["id"]
+
+    invoice = await client.get(
+        f"/orders/{order_id}/invoice",
+        headers={"Authorization": f"Bearer {customer_token}"},
+    )
+    assert invoice.status_code == 200
+    invoice_number = invoice.json()["invoice_number"]
+    pdf_path = Path("/Applications/Divine-Reesha/backend/media/invoices") / f"{invoice_number}.pdf"
+    assert pdf_path.exists(), f"Expected invoice PDF at {pdf_path}"
 
 
 @pytest.mark.asyncio

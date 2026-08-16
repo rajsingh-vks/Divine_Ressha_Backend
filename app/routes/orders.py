@@ -100,13 +100,24 @@ def _invoice_path(invoice_number: str) -> FilePath:
 def _build_s3_invoice_url(invoice_number: str) -> str:
     if settings.aws_s3_public_base_url:
         return f"{settings.aws_s3_public_base_url.rstrip('/')}/invoices/{invoice_number}.pdf"
+
     bucket = settings.aws_s3_bucket
-    region = settings.aws_region
-    if bucket:
+    if not bucket:
+        return f"{settings.media_url_prefix}/invoices/{invoice_number}.pdf"
+
+    key = f"invoices/{invoice_number}.pdf"
+    client = boto3.client("s3", region_name=settings.aws_region) if settings.aws_region else boto3.client("s3")
+    try:
+        return client.generate_presigned_url(
+            "get_object",
+            Params={"Bucket": bucket, "Key": key},
+            ExpiresIn=900,
+        )
+    except Exception:
+        region = settings.aws_region
         if region:
-            return f"https://{bucket}.s3.{region}.amazonaws.com/invoices/{invoice_number}.pdf"
-        return f"https://{bucket}.s3.amazonaws.com/invoices/{invoice_number}.pdf"
-    return f"{settings.media_url_prefix}/invoices/{invoice_number}.pdf"
+            return f"https://{bucket}.s3.{region}.amazonaws.com/{key}"
+        return f"https://{bucket}.s3.amazonaws.com/{key}"
 
 
 def _build_invoice_url(invoice_number: str) -> str:

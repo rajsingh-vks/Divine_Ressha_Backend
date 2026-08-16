@@ -24,14 +24,21 @@ def _build_invoice_details(order: dict, settings: Settings) -> tuple[str, str]:
     if settings.media_backend == "s3" and settings.aws_s3_bucket:
         if settings.aws_s3_public_base_url:
             invoice_url = f"{settings.aws_s3_public_base_url.rstrip('/')}/invoices/{invoice_number}.pdf"
-        else:
-            bucket = settings.aws_s3_bucket
-            region = settings.aws_region
-            if region:
-                invoice_url = f"https://{bucket}.s3.{region}.amazonaws.com/invoices/{invoice_number}.pdf"
-            else:
-                invoice_url = f"https://{bucket}.s3.amazonaws.com/invoices/{invoice_number}.pdf"
-        return invoice_number, invoice_url
+            return invoice_number, invoice_url
+
+        bucket = settings.aws_s3_bucket
+        key = f"invoices/{invoice_number}.pdf"
+        client = boto3.client("s3", region_name=settings.aws_region) if settings.aws_region else boto3.client("s3")
+        try:
+            invoice_url = client.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": bucket, "Key": key},
+                ExpiresIn=900,
+            )
+            return invoice_number, invoice_url
+        except Exception:
+            logger.warning("Failed to generate presigned invoice URL for %s; using app-served media fallback.", invoice_number)
+
     path = f"{settings.media_url_prefix}/invoices/{invoice_number}.pdf"
     invoice_url = f"{settings.public_base_url}{path}" if settings.public_base_url else path
     return invoice_number, invoice_url

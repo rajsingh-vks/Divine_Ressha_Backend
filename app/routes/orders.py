@@ -114,10 +114,10 @@ def _build_s3_invoice_url(invoice_number: str) -> str:
             ExpiresIn=900,
         )
     except Exception:
-        region = settings.aws_region
-        if region:
-            return f"https://{bucket}.s3.{region}.amazonaws.com/{key}"
-        return f"https://{bucket}.s3.amazonaws.com/{key}"
+        path = f"{settings.media_url_prefix}/invoices/{invoice_number}.pdf"
+        if settings.public_base_url:
+            return f"{settings.public_base_url}{path}"
+        return path
 
 
 def _build_invoice_url(invoice_number: str) -> str:

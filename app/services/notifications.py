@@ -17,34 +17,31 @@ logger = logging.getLogger(__name__)
 
 def _brand_svg_url(variant: str = "default", settings: Settings | None = None) -> str:
     branding_dir = Path(__file__).resolve().parents[1] / "static" / "branding"
-    candidates = []
+    preferred_names = [
+        "divine-reesha-logo.png",
+        "divine-reesha-logo.svg",
+        "logo.png",
+        "divine-reesha-logo-soft-gold.png",
+        "divine-reesha-logo-soft-gold.svg",
+    ]
     if variant == "soft_gold":
-        candidates.extend([
-            branding_dir / "divine-reesha-logo-soft-gold.png",
-            branding_dir / "divine-reesha-logo-soft-gold.svg",
-            branding_dir / "divine-reesha-logo.png",
-            branding_dir / "divine-reesha-logo.svg",
-            branding_dir / "logo.png",
-        ])
-    else:
-        candidates.extend([
-            branding_dir / "divine-reesha-logo.png",
-            branding_dir / "divine-reesha-logo.svg",
-            branding_dir / "logo.png",
-            branding_dir / "divine-reesha-logo-soft-gold.png",
-            branding_dir / "divine-reesha-logo-soft-gold.svg",
-        ])
+        preferred_names = [
+            "divine-reesha-logo-soft-gold.png",
+            "divine-reesha-logo-soft-gold.svg",
+            "divine-reesha-logo.png",
+            "divine-reesha-logo.svg",
+            "logo.png",
+        ]
 
-    logo_path = next((item for item in candidates if item.exists()), None)
-    if not logo_path:
-        return ""
-
-    settings = settings or Settings()
-    public_base = (settings.public_base_url or "").rstrip("/")
-    logo_name = logo_path.name
-    if public_base:
-        return f"{public_base}/branding/{logo_name}"
-    return f"/branding/{logo_name}"
+    for logo_name in preferred_names:
+        logo_path = branding_dir / logo_name
+        if logo_path.exists():
+            settings = settings or Settings()
+            public_base = (settings.public_base_url or "").rstrip("/")
+            if public_base:
+                return f"{public_base}/branding/{logo_name}"
+            return f"/branding/{logo_name}"
+    return ""
 
 
 def send_email_verification_code(settings: Settings, recipient: str, code: str) -> bool:

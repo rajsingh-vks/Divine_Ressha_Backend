@@ -62,6 +62,8 @@ app.add_middleware(
 
 media_dir = Path(__file__).resolve().parents[1] / "media"
 media_dir.mkdir(parents=True, exist_ok=True)
+branding_dir = Path(__file__).resolve().parent / "static" / "branding"
+branding_dir.mkdir(parents=True, exist_ok=True)
 
 
 def _is_configured_s3_media_url(parsed) -> bool:
@@ -103,6 +105,7 @@ async def resolve_media_url(url: str = Query(..., description="Absolute media UR
 
 app.mount("/media", StaticFiles(directory=media_dir), name="media")
 app.mount("/api/media", StaticFiles(directory=media_dir), name="api-media")
+app.mount("/branding", StaticFiles(directory=branding_dir), name="branding")
 
 app.include_router(health.router)
 app.include_router(auth.router)

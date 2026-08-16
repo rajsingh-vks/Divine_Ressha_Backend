@@ -132,6 +132,8 @@ async def test_place_order_sends_customer_and_support_emails(client, customer_to
     assert response.status_code == 201
     assert captured["customer"]["recipient"] == "customer@test.com"
     assert captured["customer"]["order_number"] == response.json()["order_number"]
+    assert captured["customer"]["invoice_attachment"] is not None
+    assert captured["customer"]["invoice_file_name"].endswith(".pdf")
     assert captured["support"]["recipient"] == "support@divineressha.com"
     assert captured["support"]["customer_email"] == "customer@test.com"
     assert captured["support"]["order_number"] == response.json()["order_number"]

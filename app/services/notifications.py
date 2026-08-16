@@ -223,25 +223,25 @@ def _send_generic_email(
         print(f"[ORDER][EMAIL] to={recipient} subject={subject}\n{body}")
         return True, None
 
+    message = EmailMessage()
+    message["Subject"] = subject
+    message["From"] = settings.smtp_from_email or settings.ses_from_email or "noreply@divineressha.com"
+    message["To"] = recipient
+    message.set_content(body)
+    if html_body:
+        message.add_alternative(html_body, subtype="html")
+    if attachment_bytes and attachment_name:
+        message.add_attachment(
+            attachment_bytes,
+            maintype="application",
+            subtype="pdf",
+            filename=attachment_name,
+        )
+
     if backend == "smtp":
         if not settings.smtp_host or not settings.smtp_from_email:
             logger.warning("SMTP backend selected but SMTP_HOST/SMTP_FROM_EMAIL is missing")
             return False, "SMTP backend is missing SMTP_HOST or SMTP_FROM_EMAIL"
-
-        message = EmailMessage()
-        message["Subject"] = subject
-        message["From"] = settings.smtp_from_email
-        message["To"] = recipient
-        message.set_content(body)
-        if html_body:
-            message.add_alternative(html_body, subtype="html")
-        if attachment_bytes and attachment_name:
-            message.add_attachment(
-                attachment_bytes,
-                maintype="application",
-                subtype="pdf",
-                filename=attachment_name,
-            )
 
         try:
             with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=15) as smtp:
@@ -263,24 +263,20 @@ def _send_generic_email(
 
         try:
             client = boto3.client("ses", region_name=settings.aws_region)
-            payload = {
-                "Source": source_email,
-                "Destination": {"ToAddresses": [recipient]},
-                "Message": {
-                    "Subject": {"Data": subject},
-                    "Body": {"Text": {"Data": body}, **({"Html": {"Data": html_body}} if html_body else {})},
-                },
-            }
-            if attachment_bytes and attachment_name:
-                payload["Message"]["Attachments"] = [{
-                    "Filename": attachment_name,
-                    "Data": attachment_bytes,
-                    "ContentType": "application/pdf",
-                }]
+            message["From"] = source_email
             if settings.ses_configuration_set:
-                payload["ConfigurationSetName"] = settings.ses_configuration_set
-
-            client.send_email(**payload)
+                client.send_raw_email(
+                    Source=source_email,
+                    Destinations=[recipient],
+                    RawMessage={"Data": message.as_bytes()},
+                    ConfigurationSetName=settings.ses_configuration_set,
+                )
+            else:
+                client.send_raw_email(
+                    Source=source_email,
+                    Destinations=[recipient],
+                    RawMessage={"Data": message.as_bytes()},
+                )
             return True, None
         except Exception as exc:
             logger.warning("SES order email failed for %s: %s", recipient, exc)

@@ -452,7 +452,15 @@ async def place_order(payload: OrderCreate, request: Request, current_user=Depen
     user = await db.users.find_one({"_id": user_id})
     customer_email = (user or {}).get("email")
     if customer_email:
-        send_order_confirmation_email(settings, customer_email, created)
+        invoice_number = _build_invoice_number(created)
+        invoice_bytes = _build_invoice_pdf_bytes(created, user)
+        send_order_confirmation_email(
+            settings,
+            customer_email,
+            created,
+            invoice_attachment=invoice_bytes,
+            invoice_file_name=f"{invoice_number}.pdf",
+        )
 
     support_email = getattr(settings, "support_email", None) or getattr(settings, "ses_from_email", None) or getattr(settings, "smtp_from_email", None)
     if support_email and customer_email:

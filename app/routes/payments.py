@@ -213,15 +213,7 @@ async def verify_razorpay_payment(
     user = await db.users.find_one({"_id": order["user_id"]})
     customer_email = (user or {}).get("email")
     if customer_email:
-        invoice_number = _build_invoice_number(updated_order)
-        invoice_bytes = _build_invoice_pdf_bytes(updated_order, user)
-        send_order_confirmation_email(
-            settings,
-            customer_email,
-            updated_order,
-            invoice_attachment=invoice_bytes,
-            invoice_file_name=f"{invoice_number}.pdf",
-        )
+        send_order_confirmation_email(settings, customer_email, updated_order)
 
     support_email = (
         getattr(settings, "support_email", None)

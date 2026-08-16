@@ -25,20 +25,13 @@ def _build_invoice_details(order: dict, settings: Settings) -> tuple[str, str]:
         if settings.aws_s3_public_base_url:
             invoice_url = f"{settings.aws_s3_public_base_url.rstrip('/')}/invoices/{invoice_number}.pdf"
             return invoice_number, invoice_url
-
         bucket = settings.aws_s3_bucket
-        key = f"invoices/{invoice_number}.pdf"
-        client = boto3.client("s3", region_name=settings.aws_region) if settings.aws_region else boto3.client("s3")
-        try:
-            invoice_url = client.generate_presigned_url(
-                "get_object",
-                Params={"Bucket": bucket, "Key": key},
-                ExpiresIn=900,
-            )
-            return invoice_number, invoice_url
-        except Exception:
-            logger.warning("Failed to generate presigned invoice URL for %s; using app-served media fallback.", invoice_number)
-
+        region = settings.aws_region
+        if region:
+            invoice_url = f"https://{bucket}.s3.{region}.amazonaws.com/invoices/{invoice_number}.pdf"
+        else:
+            invoice_url = f"https://{bucket}.s3.amazonaws.com/invoices/{invoice_number}.pdf"
+        return invoice_number, invoice_url
     path = f"{settings.media_url_prefix}/invoices/{invoice_number}.pdf"
     invoice_url = f"{settings.public_base_url}{path}" if settings.public_base_url else path
     return invoice_number, invoice_url
@@ -127,13 +120,7 @@ def _brand_order_html(
 """
 
 
-def send_order_confirmation_email(
-    settings: Settings,
-    recipient: str,
-    order: dict,
-    invoice_attachment: bytes | None = None,
-    invoice_file_name: str | None = None,
-) -> tuple[bool, str | None]:
+def send_order_confirmation_email(settings: Settings, recipient: str, order: dict) -> tuple[bool, str | None]:
     order_number = order.get("order_number", "N/A")
     subtotal = float(order.get("subtotal", 0) or 0)
     invoice_number, invoice_url = _build_invoice_details(order, settings)
@@ -161,15 +148,7 @@ def send_order_confirmation_email(
         cta_url=invoice_url,
         items=order.get("items", []),
     )
-    return _send_generic_email(
-        settings,
-        recipient,
-        subject,
-        body,
-        html_body,
-        attachment_bytes=invoice_attachment,
-        attachment_name=invoice_file_name or f"{invoice_number}.pdf",
-    )
+    return _send_generic_email(settings, recipient, subject, body, html_body)
 
 
 def send_order_placed_support_email(settings: Settings, recipient: str, order: dict, customer_email: str) -> tuple[bool, str | None]:
@@ -205,15 +184,7 @@ def send_order_placed_support_email(settings: Settings, recipient: str, order: d
     return _send_generic_email(settings, recipient, subject, body, html_body)
 
 
-def _send_generic_email(
-    settings: Settings,
-    recipient: str,
-    subject: str,
-    body: str,
-    html_body: str | None = None,
-    attachment_bytes: bytes | None = None,
-    attachment_name: str | None = None,
-) -> tuple[bool, str | None]:
+def _send_generic_email(settings: Settings, recipient: str, subject: str, body: str, html_body: str | None = None) -> tuple[bool, str | None]:
     backend = settings.email_delivery_backend
 
     if backend == "disabled":
@@ -223,25 +194,18 @@ def _send_generic_email(
         print(f"[ORDER][EMAIL] to={recipient} subject={subject}\n{body}")
         return True, None
 
-    message = EmailMessage()
-    message["Subject"] = subject
-    message["From"] = settings.smtp_from_email or settings.ses_from_email or "noreply@divineressha.com"
-    message["To"] = recipient
-    message.set_content(body)
-    if html_body:
-        message.add_alternative(html_body, subtype="html")
-    if attachment_bytes and attachment_name:
-        message.add_attachment(
-            attachment_bytes,
-            maintype="application",
-            subtype="pdf",
-            filename=attachment_name,
-        )
-
     if backend == "smtp":
         if not settings.smtp_host or not settings.smtp_from_email:
             logger.warning("SMTP backend selected but SMTP_HOST/SMTP_FROM_EMAIL is missing")
             return False, "SMTP backend is missing SMTP_HOST or SMTP_FROM_EMAIL"
+
+        message = EmailMessage()
+        message["Subject"] = subject
+        message["From"] = settings.smtp_from_email
+        message["To"] = recipient
+        message.set_content(body)
+        if html_body:
+            message.add_alternative(html_body, subtype="html")
 
         try:
             with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=15) as smtp:
@@ -263,20 +227,18 @@ def _send_generic_email(
 
         try:
             client = boto3.client("ses", region_name=settings.aws_region)
-            message["From"] = source_email
+            payload = {
+                "Source": source_email,
+                "Destination": {"ToAddresses": [recipient]},
+                "Message": {
+                    "Subject": {"Data": subject},
+                    "Body": {"Text": {"Data": body}, **({"Html": {"Data": html_body}} if html_body else {})},
+                },
+            }
             if settings.ses_configuration_set:
-                client.send_raw_email(
-                    Source=source_email,
-                    Destinations=[recipient],
-                    RawMessage={"Data": message.as_bytes()},
-                    ConfigurationSetName=settings.ses_configuration_set,
-                )
-            else:
-                client.send_raw_email(
-                    Source=source_email,
-                    Destinations=[recipient],
-                    RawMessage={"Data": message.as_bytes()},
-                )
+                payload["ConfigurationSetName"] = settings.ses_configuration_set
+
+            client.send_email(**payload)
             return True, None
         except Exception as exc:
             logger.warning("SES order email failed for %s: %s", recipient, exc)

@@ -886,65 +886,6 @@ async def test_get_order_tracking_aliases(client, customer_token, test_db):
     assert track.json()["order_number"].startswith("DR-")
 
 
-def test_send_order_confirmation_email_attaches_invoice_pdf(monkeypatch):
-    from types import SimpleNamespace
-
-    import app.services.notifications as notifications
-
-    captured = {}
-
-    class FakeSMTP:
-        def __init__(self, host, port, timeout):
-            self.host = host
-            self.port = port
-            self.timeout = timeout
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def starttls(self):
-            pass
-
-        def login(self, username, password):
-            pass
-
-        def send_message(self, message):
-            captured["message"] = message
-
-    monkeypatch.setattr(notifications.smtplib, "SMTP", FakeSMTP)
-    settings = SimpleNamespace(
-        email_delivery_backend="smtp",
-        media_backend="local",
-        media_url_prefix="/api/media",
-        public_base_url=None,
-        aws_s3_bucket=None,
-        aws_s3_public_base_url=None,
-        aws_region=None,
-        smtp_host="smtp.example.com",
-        smtp_port=587,
-        smtp_from_email="noreply@divineressha.com",
-        smtp_use_tls=False,
-        smtp_username=None,
-        smtp_password=None,
-    )
-
-    ok, error = notifications.send_order_confirmation_email(
-        settings,
-        "customer@test.com",
-        {"order_number": "DR-123", "subtotal": 1200.0, "items": [], "invoice_number": "INV-DR-123"},
-        invoice_attachment=b"%PDF-1.4 test-pdf",
-        invoice_file_name="INV-DR-123.pdf",
-    )
-
-    assert ok is True
-    assert error is None
-    payload = captured["message"].get_payload()
-    assert any(part.get_filename() == "INV-DR-123.pdf" for part in payload if isinstance(payload, list))
-
-
 @pytest.mark.asyncio
 async def test_send_order_confirmation(client, customer_token, test_db):
     address = await client.post(

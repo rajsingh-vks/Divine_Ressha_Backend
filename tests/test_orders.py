@@ -214,6 +214,16 @@ async def test_verify_razorpay_payment_sends_customer_and_support_emails(client,
     assert captured["support"]["customer_email"] == "customer@test.com"
 
 
+def test_invoice_pdf_uses_brand_mark_instead_of_wordmark():
+    import app.routes.orders as orders
+
+    logo_mark = orders._build_divine_logo_mark()
+
+    assert logo_mark.width == 110
+    assert logo_mark.height == 110
+    assert len(logo_mark.contents) >= 5
+
+
 def test_order_confirmation_email_uses_brand_mark_and_product_images(monkeypatch):
     import app.services.notifications as notifications
 
@@ -257,7 +267,8 @@ def test_order_confirmation_email_uses_brand_mark_and_product_images(monkeypatch
 
     assert ok is True
     assert err is None
-    assert "data:image/svg+xml;base64," in captured["html"]
+    assert "/branding/" in captured["html"]
+    assert "divine-reesha-logo" in captured["html"]
     assert "Rose Ritual Candle" in captured["html"]
     assert "https://example.com/candle.jpg" in captured["html"]
 

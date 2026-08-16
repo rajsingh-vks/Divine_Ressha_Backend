@@ -10,10 +10,12 @@ from bson import ObjectId
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_LEFT, TA_RIGHT
 from reportlab.lib.pagesizes import A4
-from reportlab.graphics.shapes import Circle, Drawing, String
+from reportlab.graphics.shapes import Circle, Drawing, Path, String
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
-from reportlab.platypus import HRFlowable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.platypus import HRFlowable, Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 
 from app.config import get_settings
@@ -44,6 +46,13 @@ router = APIRouter(prefix="/orders", tags=["Orders"])
 ALLOWED_ORDER_STATUSES = {"placed", "confirmed", "processing", "shipped", "delivered", "cancelled", "returned"}
 ALLOWED_REFUND_STATUSES = {"pending", "processed", "rejected"}
 settings = get_settings()
+
+_FONT_PATH = "/Library/Fonts/Arial Unicode.ttf"
+if _FONT_PATH and FilePath(_FONT_PATH).exists():
+    try:
+        pdfmetrics.registerFont(TTFont("ArialUnicode", _FONT_PATH))
+    except Exception:
+        pass
 
 
 def _to_object_id(value: str) -> ObjectId:
@@ -145,6 +154,29 @@ def _build_divine_logo_mark() -> Drawing:
     return logo_mark
 
 
+def _brand_logo_image() -> Image:
+    branding_dir = FilePath(__file__).resolve().parents[1] / "static" / "branding"
+    candidates = [
+        branding_dir / "divine-reesha-logo.png",
+        branding_dir / "divine-reesha-logo.svg",
+        branding_dir / "logo.png",
+        branding_dir / "divine-reesha-logo-soft-gold.png",
+        branding_dir / "divine-reesha-logo-soft-gold.svg",
+    ]
+
+    logo_path = next((path for path in candidates if path.exists()), None)
+    if not logo_path:
+        return Image(BytesIO(), width=120, height=40)
+
+    if logo_path.suffix.lower() == ".png":
+        return Image(str(logo_path), width=120, height=36)
+
+    import cairosvg
+
+    png_bytes = cairosvg.svg2png(url=str(logo_path), output_width=600, output_height=180)
+    return Image(BytesIO(png_bytes), width=120, height=36)
+
+
 def _build_invoice_pdf_bytes(order: dict, user: dict | None = None) -> bytes:
     invoice_number = _build_invoice_number(order)
     user_name = (user or {}).get("full_name") or "Customer"
@@ -214,6 +246,7 @@ def _build_invoice_pdf_bytes(order: dict, user: dict | None = None) -> bytes:
     normal_style = ParagraphStyle(
         "NormalCustom",
         parent=styles["Normal"],
+        fontName="ArialUnicode" if FilePath(_FONT_PATH).exists() else "Helvetica",
         fontSize=9,
         leading=13,
         textColor=colors.HexColor("#333333"),
@@ -222,52 +255,37 @@ def _build_invoice_pdf_bytes(order: dict, user: dict | None = None) -> bytes:
     small_style = ParagraphStyle(
         "Small",
         parent=styles["Normal"],
+        fontName="ArialUnicode" if FilePath(_FONT_PATH).exists() else "Helvetica",
         fontSize=8,
         leading=11,
         textColor=colors.HexColor("#777777"),
     )
 
-    story = []
-
-    logo_svg = """
-    <svg width="110" height="110" viewBox="0 0 110 110" xmlns="http://www.w3.org/2000/svg">
-      <defs>
-        <linearGradient id="gold" x1="18" y1="10" x2="90" y2="98" gradientUnits="userSpaceOnUse">
-          <stop stop-color="#F8E7B7"/>
-          <stop offset="0.45" stop-color="#D9B764"/>
-          <stop offset="1" stop-color="#B98746"/>
-        </linearGradient>
-      </defs>
-      <circle cx="55" cy="55" r="44" fill="none" stroke="url(#gold)" stroke-width="3.2"/>
-      <path d="M35 37C40.4 28.1 49.5 23 60 23C75.5 23 88 34.8 88 50C88 64.8 75.4 77 60 77H42V92H35V37ZM42 71H59C71.4 71 80 62.8 80 50C80 38.2 72.2 31 60 31C49.8 31 44.2 35.3 42 41.8V71Z" fill="url(#gold)"/>
-      <path d="M72 42C76.5 37.4 82.8 34.7 89.9 34.7C98.8 34.7 106.8 39.1 111.5 46.1C105.1 44.4 99.2 43.9 92.4 44.9C85.9 45.9 79.2 48.7 72 53.6V42Z" fill="url(#gold)" opacity="0.9"/>
-      <path d="M74 65C80.8 59.9 88.1 57.3 95.4 57.3C102.1 57.3 108.2 59.7 113 64.2C107.9 67.9 101.9 70.6 95.3 71.9C88.6 73.2 81.7 73 74 71.8V65Z" fill="url(#gold)" opacity="0.76"/>
-      <path d="M25 86C39 69.3 48 58.3 52.5 50.7C57.5 60.7 60.8 71.3 61.6 81.5C52.3 81.1 40.1 83 25 86Z" fill="#E7C9A8" opacity="0.9"/>
-    </svg>
-    """
-
-    header = Table(
-        [
-            [
-                Table(
-                    [[logo_mark], [Paragraph("<font size='8'>BEAUTY • HEALING • HARMONY</font>", brand_style)]],
-                    colWidths=[70 * mm],
-                    rowHeights=[42 * mm, 10 * mm],
-                ),
-            ]
-        ],
-        colWidths=[160 * mm],
+    money_style = ParagraphStyle(
+        "Money",
+        parent=normal_style,
+        fontName="ArialUnicode" if FilePath(_FONT_PATH).exists() else "Helvetica",
+        alignment=TA_RIGHT,
     )
 
+    story = []
+
+    logo_image = _brand_logo_image()
+    if hasattr(logo_image, "hAlign"):
+        logo_image.hAlign = "CENTER"
+
+    header = Table(
+        [[logo_image]],
+        colWidths=[140 * mm],
+    )
     header.setStyle(
         TableStyle([
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
             ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
         ])
     )
     story.append(header)
-    story.append(Paragraph("DIVINE RESSHA", wordmark_style))
     story.append(Paragraph("BEAUTY • HEALING • HARMONY", tagline_style))
     story.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor("#D7B470"), spaceBefore=6, spaceAfter=14))
     story.append(
@@ -375,11 +393,8 @@ def _build_invoice_pdf_bytes(order: dict, user: dict | None = None) -> bytes:
         product_rows.append([
             Paragraph(str(item.get("name", "Product")), normal_style),
             Paragraph(str(int(item.get("quantity", 1) or 1)), normal_style),
-            Paragraph(f"₹{float(item.get('unit_price') or 0):.2f}", normal_style),
-            Paragraph(
-                f"₹{float(item.get('line_total') or 0):.2f}",
-                ParagraphStyle("Right", parent=normal_style, alignment=TA_RIGHT),
-            ),
+            Paragraph(f"₹{float(item.get('unit_price') or 0):.2f}", money_style),
+            Paragraph(f"₹{float(item.get('line_total') or 0):.2f}", money_style),
         ])
 
     products = Table(product_rows, colWidths=[95 * mm, 18 * mm, 30 * mm, 27 * mm], repeatRows=1)

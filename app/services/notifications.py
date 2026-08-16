@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import logging
 import smtplib
 from email.message import EmailMessage
@@ -16,12 +15,36 @@ from app.config import Settings
 logger = logging.getLogger(__name__)
 
 
-def _brand_svg_url(variant: str = "default") -> str:
-    svg_name = "divine-reesha-logo-soft-gold.svg" if variant == "soft_gold" else "divine-reesha-logo.svg"
-    svg_path = Path(__file__).resolve().parents[1] / "static" / "branding" / svg_name
-    if not svg_path.exists():
+def _brand_svg_url(variant: str = "default", settings: Settings | None = None) -> str:
+    branding_dir = Path(__file__).resolve().parents[1] / "static" / "branding"
+    candidates = []
+    if variant == "soft_gold":
+        candidates.extend([
+            branding_dir / "divine-reesha-logo-soft-gold.png",
+            branding_dir / "divine-reesha-logo-soft-gold.svg",
+            branding_dir / "divine-reesha-logo.png",
+            branding_dir / "divine-reesha-logo.svg",
+            branding_dir / "logo.png",
+        ])
+    else:
+        candidates.extend([
+            branding_dir / "divine-reesha-logo.png",
+            branding_dir / "divine-reesha-logo.svg",
+            branding_dir / "logo.png",
+            branding_dir / "divine-reesha-logo-soft-gold.png",
+            branding_dir / "divine-reesha-logo-soft-gold.svg",
+        ])
+
+    logo_path = next((item for item in candidates if item.exists()), None)
+    if not logo_path:
         return ""
-    return f"/branding/{svg_name}"
+
+    settings = settings or Settings()
+    public_base = (settings.public_base_url or "").rstrip("/")
+    logo_name = logo_path.name
+    if public_base:
+        return f"{public_base}/branding/{logo_name}"
+    return f"/branding/{logo_name}"
 
 
 def send_email_verification_code(settings: Settings, recipient: str, code: str) -> bool:
@@ -95,6 +118,7 @@ def _brand_order_html(
     cta_label: str | None = None,
     cta_url: str | None = None,
     items: list[dict] | None = None,
+    settings: Settings | None = None,
 ) -> str:
     rows_html = "".join(
         f"<tr><td style=\"padding: 10px 0; color: #4b5563; font-size: 14px;\">{escape(str(label))}</td><td style=\"padding: 10px 0; color: #111827; font-weight: 600; text-align: right;\">{value}</td></tr>"
@@ -109,7 +133,7 @@ def _brand_order_html(
             "</div>"
         )
 
-    logo_url = _brand_svg_url("soft_gold")
+    logo_url = _brand_svg_url("soft_gold", settings)
     header_logo = f"<img src=\"{logo_url}\" alt=\"Divine Reesha\" style=\"display: block; width: 180px; max-width: 100%; height: auto; margin-bottom: 14px;\" />" if logo_url else "<div style=\"font-size: 12px; letter-spacing: 2px; text-transform: uppercase; opacity: 0.9;\">Divine Reesha</div>"
 
     return f"""<!DOCTYPE html>
@@ -170,6 +194,7 @@ def send_order_confirmation_email(settings: Settings, recipient: str, order: dic
         cta_label="View invoice",
         cta_url=invoice_url,
         items=order.get("items", []),
+        settings=settings,
     )
     return _send_generic_email(settings, recipient, subject, body, html_body)
 
@@ -203,6 +228,7 @@ def send_order_placed_support_email(settings: Settings, recipient: str, order: d
         cta_label="Open invoice",
         cta_url=invoice_url,
         items=order.get("items", []),
+        settings=settings,
     )
     return _send_generic_email(settings, recipient, subject, body, html_body)
 

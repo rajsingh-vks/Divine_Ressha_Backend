@@ -127,7 +127,13 @@ def _brand_order_html(
 """
 
 
-def send_order_confirmation_email(settings: Settings, recipient: str, order: dict) -> tuple[bool, str | None]:
+def send_order_confirmation_email(
+    settings: Settings,
+    recipient: str,
+    order: dict,
+    invoice_attachment: bytes | None = None,
+    invoice_file_name: str | None = None,
+) -> tuple[bool, str | None]:
     order_number = order.get("order_number", "N/A")
     subtotal = float(order.get("subtotal", 0) or 0)
     invoice_number, invoice_url = _build_invoice_details(order, settings)
@@ -155,7 +161,15 @@ def send_order_confirmation_email(settings: Settings, recipient: str, order: dic
         cta_url=invoice_url,
         items=order.get("items", []),
     )
-    return _send_generic_email(settings, recipient, subject, body, html_body)
+    return _send_generic_email(
+        settings,
+        recipient,
+        subject,
+        body,
+        html_body,
+        attachment_bytes=invoice_attachment,
+        attachment_name=invoice_file_name or f"{invoice_number}.pdf",
+    )
 
 
 def send_order_placed_support_email(settings: Settings, recipient: str, order: dict, customer_email: str) -> tuple[bool, str | None]:
@@ -191,7 +205,15 @@ def send_order_placed_support_email(settings: Settings, recipient: str, order: d
     return _send_generic_email(settings, recipient, subject, body, html_body)
 
 
-def _send_generic_email(settings: Settings, recipient: str, subject: str, body: str, html_body: str | None = None) -> tuple[bool, str | None]:
+def _send_generic_email(
+    settings: Settings,
+    recipient: str,
+    subject: str,
+    body: str,
+    html_body: str | None = None,
+    attachment_bytes: bytes | None = None,
+    attachment_name: str | None = None,
+) -> tuple[bool, str | None]:
     backend = settings.email_delivery_backend
 
     if backend == "disabled":
@@ -213,6 +235,13 @@ def _send_generic_email(settings: Settings, recipient: str, subject: str, body: 
         message.set_content(body)
         if html_body:
             message.add_alternative(html_body, subtype="html")
+        if attachment_bytes and attachment_name:
+            message.add_attachment(
+                attachment_bytes,
+                maintype="application",
+                subtype="pdf",
+                filename=attachment_name,
+            )
 
         try:
             with smtplib.SMTP(settings.smtp_host, settings.smtp_port, timeout=15) as smtp:
@@ -242,6 +271,12 @@ def _send_generic_email(settings: Settings, recipient: str, subject: str, body: 
                     "Body": {"Text": {"Data": body}, **({"Html": {"Data": html_body}} if html_body else {})},
                 },
             }
+            if attachment_bytes and attachment_name:
+                payload["Message"]["Attachments"] = [{
+                    "Filename": attachment_name,
+                    "Data": attachment_bytes,
+                    "ContentType": "application/pdf",
+                }]
             if settings.ses_configuration_set:
                 payload["ConfigurationSetName"] = settings.ses_configuration_set
 

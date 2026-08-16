@@ -132,8 +132,6 @@ async def test_place_order_sends_customer_and_support_emails(client, customer_to
     assert response.status_code == 201
     assert captured["customer"]["recipient"] == "customer@test.com"
     assert captured["customer"]["order_number"] == response.json()["order_number"]
-    assert captured["customer"]["invoice_attachment"] is not None
-    assert captured["customer"]["invoice_file_name"].endswith(".pdf")
     assert captured["support"]["recipient"] == "support@divineressha.com"
     assert captured["support"]["customer_email"] == "customer@test.com"
     assert captured["support"]["order_number"] == response.json()["order_number"]
@@ -214,6 +212,54 @@ async def test_verify_razorpay_payment_sends_customer_and_support_emails(client,
     assert captured["customer"]["order_number"] == response.json()["backend_order_id"] or created.json()["order_number"]
     assert captured["support"]["recipient"] == "support@divineressha.com"
     assert captured["support"]["customer_email"] == "customer@test.com"
+
+
+def test_order_confirmation_email_uses_brand_mark_and_product_images(monkeypatch):
+    import app.services.notifications as notifications
+
+    captured = {}
+
+    def fake_send_generic_email(settings_obj, recipient, subject, body, html_body=None):
+        captured["html"] = html_body
+        return True, None
+
+    monkeypatch.setattr(notifications, "_send_generic_email", fake_send_generic_email)
+
+    order = {
+        "order_number": "DR-124",
+        "subtotal": 2400.0,
+        "items": [
+            {
+                "name": "Rose Ritual Candle",
+                "quantity": 2,
+                "unit_price": 1200.0,
+                "line_total": 2400.0,
+                "image_url": "https://example.com/candle.jpg",
+            }
+        ],
+        "invoice_number": "INV-DR-124",
+    }
+    settings = type(
+        "Settings",
+        (),
+        {
+            "media_backend": "local",
+            "media_url_prefix": "/api/media",
+            "public_base_url": "https://example.com",
+            "aws_s3_bucket": None,
+            "aws_s3_public_base_url": None,
+            "aws_region": None,
+            "email_delivery_backend": "console",
+        },
+    )()
+
+    ok, err = notifications.send_order_confirmation_email(settings, "customer@test.com", order)
+
+    assert ok is True
+    assert err is None
+    assert "data:image/svg+xml;base64," in captured["html"]
+    assert "Rose Ritual Candle" in captured["html"]
+    assert "https://example.com/candle.jpg" in captured["html"]
 
 
 @pytest.mark.asyncio

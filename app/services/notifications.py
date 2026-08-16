@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import base64
 import logging
 import smtplib
 from email.message import EmailMessage
 from html import escape
+from pathlib import Path
 
 import boto3
 import httpx
@@ -12,6 +14,15 @@ from app.config import Settings
 
 
 logger = logging.getLogger(__name__)
+
+
+def _brand_svg_data_uri(variant: str = "default") -> str:
+    svg_name = "divine-reesha-logo-soft-gold.svg" if variant == "soft_gold" else "divine-reesha-logo.svg"
+    svg_path = Path(__file__).resolve().parents[1] / "static" / "branding" / svg_name
+    if not svg_path.exists():
+        return ""
+    encoded = base64.b64encode(svg_path.read_bytes()).decode("ascii")
+    return f"data:image/svg+xml;base64,{encoded}"
 
 
 def send_email_verification_code(settings: Settings, recipient: str, code: str) -> bool:
@@ -47,9 +58,19 @@ def _render_order_items_table(items: list[dict]) -> str:
         quantity = int(item.get("quantity") or 1)
         unit_price = float(item.get("unit_price") or 0)
         line_total = float(item.get("line_total") or (unit_price * quantity))
+        image_url = item.get("image_url") or item.get("product_image_url")
+        image_html = ""
+        if image_url:
+            image_html = (
+                "<img src=\"" + escape(str(image_url), quote=True) + "\" "
+                "style=\"width: 42px; height: 42px; object-fit: cover; border-radius: 10px; border: 1px solid #ecdcc7; background: #f8f3ef; display: block;\" alt=\"Product\" />"
+            )
+
         rows.append(
             "<tr>"
-            f"<td style=\"padding: 10px 8px 10px 0; border-bottom: 1px solid #f1e7db; color: #1f2937;\">{name}</td>"
+            f"<td style=\"padding: 10px 8px 10px 0; border-bottom: 1px solid #f1e7db; color: #1f2937;\">"
+            f"<div style=\"display: flex; align-items: center; gap: 10px;\">{image_html}<span>{name}</span></div>"
+            "</td>"
             f"<td style=\"padding: 10px 8px; border-bottom: 1px solid #f1e7db; color: #4b5563; text-align: center;\">{quantity}</td>"
             f"<td style=\"padding: 10px 0 10px 8px; border-bottom: 1px solid #f1e7db; color: #111827; font-weight: 600; text-align: right;\">₹{line_total:.2f}</td>"
             "</tr>"
@@ -85,9 +106,12 @@ def _brand_order_html(
     if cta_label and cta_url:
         cta_html = (
             "<div style=\"margin-top: 24px; text-align: center;\">"
-            f"<a href=\"{escape(cta_url, quote=True)}\" style=\"display: inline-block; background: linear-gradient(135deg, #3a251b, #7a4e3a); color: #ffffff; text-decoration: none; font-weight: 700; font-size: 14px; line-height: 1; padding: 15px 28px; border-radius: 999px; letter-spacing: 0.06em; text-transform: uppercase;\">{escape(cta_label)}</a>"
+            f"<a href=\"{escape(cta_url, quote=True)}\" style=\"display: inline-block; background: linear-gradient(135deg, #caa75d 0%, #f4e5ba 22%, #8d693f 100%); color: #24160f; text-decoration: none; font-weight: 700; font-size: 13px; line-height: 1; padding: 16px 28px; border-radius: 999px; letter-spacing: 0.08em; text-transform: uppercase; box-shadow: 0 8px 18px rgba(153, 119, 73, 0.18);\">{escape(cta_label)}</a>"
             "</div>"
         )
+
+    logo_data_uri = _brand_svg_data_uri("soft_gold")
+    header_logo = f"<img src=\"{logo_data_uri}\" alt=\"Divine Reesha\" style=\"display: block; width: 180px; max-width: 100%; height: auto; margin-bottom: 14px;\" />" if logo_data_uri else "<div style=\"font-size: 12px; letter-spacing: 2px; text-transform: uppercase; opacity: 0.9;\">Divine Reesha</div>"
 
     return f"""<!DOCTYPE html>
 <html lang=\"en\">
@@ -98,9 +122,9 @@ def _brand_order_html(
   </head>
   <body style=\"margin: 0; padding: 0; background-color: #f8f5f1; font-family: 'Georgia', 'Times New Roman', serif; color: #111827;\">
     <div style=\"max-width: 680px; margin: 32px auto; background: #fffdfb; border-radius: 20px; overflow: hidden; border: 1px solid #eadcc9; box-shadow: 0 10px 30px rgba(33, 23, 18, 0.08);\">
-      <div style=\"background: linear-gradient(135deg, #201612 0%, #4d2e24 45%, #8b6449 100%); padding: 32px 32px 24px; color: #ffffff;\">
-        <div style=\"font-size: 12px; letter-spacing: 2px; text-transform: uppercase; opacity: 0.9;\">Divine Reesha</div>
-        <h1 style=\"margin: 12px 0 0; font-size: 30px; line-height: 1.2; font-family: 'Georgia', 'Times New Roman', serif; font-weight: 600;\">{headline}</h1>
+      <div style=\"background: linear-gradient(135deg, #201612 0%, #3f281f 35%, #8a6548 100%); padding: 28px 32px 24px; color: #ffffff;\">
+        {header_logo}
+        <h1 style=\"margin: 0; font-size: 30px; line-height: 1.2; font-family: 'Georgia', 'Times New Roman', serif; font-weight: 600;\">{headline}</h1>
       </div>
       <div style=\"padding: 28px 32px 18px;\">
         <table cellpadding=\"0\" cellspacing=\"0\" width=\"100%\" style=\"border-collapse: collapse;\">

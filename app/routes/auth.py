@@ -22,6 +22,7 @@ from app.schemas.auth import (
     ResetPasswordRequest,
     UserProfile,
     VerifyEmailRequest,
+    VerifyResetOTPRequest,
 )
 from app.security import (
     ACCESS_TOKEN_TTL,
@@ -94,6 +95,19 @@ def _build_one_time_token() -> tuple[str, dict]:
 
 def _generate_verification_code() -> str:
     return f"{secrets.randbelow(900000) + 100000}"
+
+
+async def _issue_password_reset_token(db, user_id) -> str:
+    token, token_document = _build_one_time_token()
+    token_document.update(
+        {
+            "user_id": user_id,
+            "type": "password_reset",
+            "expires_at": datetime.now(UTC) + PASSWORD_RESET_TOKEN_TTL,
+        }
+    )
+    await db.password_reset_tokens.insert_one(token_document)
+    return token
 
 
 @router.post("/signup/initiate", response_model=SignupInitiateResponse)
@@ -348,21 +362,66 @@ async def refresh_token(payload: RefreshTokenRequest, request: Request):
 @router.post("/forgot-password")
 async def forgot_password(payload: ForgotPasswordRequest, request: Request):
     db = request.app.state.mongo_db
-    user = await db.users.find_one({"email": payload.email.strip().lower()})
+    email = payload.email.strip().lower()
+    user = await db.users.find_one({"email": email})
 
     if not user:
         return {"message": "If the email exists, a password reset link will be sent."}
 
-    token, token_document = _build_one_time_token()
-    token_document.update(
+    reset_token = await _issue_password_reset_token(db, user["_id"])
+    otp = _generate_verification_code()
+    now = datetime.now(UTC)
+    await db.password_reset_tokens.update_one(
+        {"email": email, "type": "password_reset_otp"},
         {
-            "user_id": user["_id"],
-            "type": "password_reset",
-            "expires_at": datetime.now(UTC) + PASSWORD_RESET_TOKEN_TTL,
-        }
+            "$set": {
+                "email": email,
+                "user_id": user["_id"],
+                "otp_hash": hash_token(otp),
+                "expires_at": now + PASSWORD_RESET_TOKEN_TTL,
+                "attempts": 0,
+                "updated_at": now,
+            },
+            "$setOnInsert": {"created_at": now},
+        },
+        upsert=True,
     )
-    await db.password_reset_tokens.insert_one(token_document)
-    return {"message": "Password reset link prepared.", "reset_token": token}
+
+    email_sent, email_error = send_email_verification_code_detailed(settings, email, otp)
+    if not settings.otp_expose_codes and not email_sent:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=email_error or "Password reset OTP could not be delivered.",
+        )
+
+    response = {"message": "Verification code sent to your email.", "reset_token": reset_token}
+    if settings.otp_expose_codes:
+        response["verification_code"] = otp
+    return response
+
+
+@router.post("/verify-reset-otp")
+async def verify_reset_otp(payload: VerifyResetOTPRequest, request: Request):
+    db = request.app.state.mongo_db
+    email = payload.email.strip().lower()
+    pending = await db.password_reset_tokens.find_one({"email": email, "type": "password_reset_otp"})
+
+    if not pending:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Reset verification code not found.")
+
+    if _utc(pending["expires_at"]) < datetime.now(UTC):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Reset verification code expired.")
+
+    if hash_token(payload.otp.strip()) != pending.get("otp_hash"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid reset verification code.")
+
+    reset_token = await _issue_password_reset_token(db, pending["user_id"])
+    await db.password_reset_tokens.update_one(
+        {"_id": pending["_id"]},
+        {"$set": {"verified_at": datetime.now(UTC), "consumed_at": datetime.now(UTC)}},
+    )
+
+    return {"message": "Reset verification code verified.", "reset_token": reset_token}
 
 
 @router.post("/reset-password")

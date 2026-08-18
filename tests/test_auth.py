@@ -269,6 +269,37 @@ async def test_forgot_password_unknown_email(client):
 
 
 @pytest.mark.asyncio
+async def test_forgot_password_email_otp_flow(client):
+    auth_route.settings.otp_expose_codes = True
+    reg = await client.post("/auth/register", json={
+        "email": "otp_reset@test.com",
+        "password": "OldPass@123",
+        "role": "customer",
+    })
+    assert reg.status_code == 201
+
+    forgot_resp = await client.post("/auth/forgot-password", json={"email": "otp_reset@test.com"})
+    assert forgot_resp.status_code == 200
+    body = forgot_resp.json()
+    assert body.get("verification_code")
+    assert body.get("reset_token")
+
+    verify_resp = await client.post("/auth/verify-reset-otp", json={
+        "email": "otp_reset@test.com",
+        "otp": body["verification_code"],
+    })
+    assert verify_resp.status_code == 200
+    assert verify_resp.json().get("reset_token")
+
+    reset_resp = await client.post("/auth/reset-password", json={
+        "token": verify_resp.json()["reset_token"],
+        "new_password": "NewPass@123",
+    })
+    assert reset_resp.status_code == 200
+    assert reset_resp.json()["message"]
+
+
+@pytest.mark.asyncio
 async def test_forgot_and_reset_password(client):
     # Register a throwaway user
     reg = await client.post("/auth/register", json={

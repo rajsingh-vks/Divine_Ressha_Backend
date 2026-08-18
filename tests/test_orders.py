@@ -214,6 +214,69 @@ async def test_verify_razorpay_payment_sends_customer_and_support_emails(client,
     assert captured["support"]["customer_email"] == "customer@test.com"
 
 
+@pytest.mark.asyncio
+async def test_send_confirmation_endpoint_dispatches_customer_and_support_emails(client, customer_token, test_db, monkeypatch):
+    import app.routes.orders as orders_module
+
+    orders_module.settings.support_email = "support@divineressha.com"
+    captured = {}
+
+    def fake_customer_email(settings_obj, recipient, order):
+        captured["customer"] = {"recipient": recipient, "order_number": order["order_number"]}
+        return True, None
+
+    def fake_support_email(settings_obj, recipient, order, customer_email):
+        captured["support"] = {
+            "recipient": recipient,
+            "order_number": order["order_number"],
+            "customer_email": customer_email,
+        }
+        return True, None
+
+    monkeypatch.setattr(orders_module, "send_order_confirmation_email", fake_customer_email)
+    monkeypatch.setattr(orders_module, "send_order_placed_support_email", fake_support_email)
+
+    address = await client.post(
+        "/addresses",
+        headers={"Authorization": f"Bearer {customer_token}"},
+        json={
+            "full_name": "Send Confirm User",
+            "phone": "+1-555-000-3333",
+            "line1": "Mail Street 10",
+            "city": "Austin",
+            "state": "TX",
+            "postal_code": "73303",
+            "country": "US",
+            "address_type": "home",
+            "is_default": True,
+        },
+    )
+    product_id = await _create_product(test_db, price=180.0)
+    await client.post(
+        "/cart",
+        headers={"Authorization": f"Bearer {customer_token}"},
+        json={"product_id": product_id, "quantity": 1},
+    )
+    created = await client.post(
+        "/orders",
+        headers={"Authorization": f"Bearer {customer_token}"},
+        json={"address_id": address.json()["id"]},
+    )
+    order_id = created.json()["id"]
+
+    response = await client.post(
+        f"/orders/{order_id}/send-confirmation",
+        headers={"Authorization": f"Bearer {customer_token}"},
+        json={"payment_status": "paid"},
+    )
+
+    assert response.status_code == 200
+    assert captured["customer"]["recipient"] == "customer@test.com"
+    assert captured["customer"]["order_number"] == created.json()["order_number"]
+    assert captured["support"]["recipient"] == "support@divineressha.com"
+    assert captured["support"]["customer_email"] == "customer@test.com"
+
+
 def test_invoice_pdf_uses_brand_mark_instead_of_wordmark():
     import app.routes.orders as orders
 

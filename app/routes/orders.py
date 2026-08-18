@@ -1059,6 +1059,26 @@ async def send_order_confirmation(
     user = await db.users.find_one({"_id": order["user_id"]})
     recipient = user.get("email") if user else None
 
+    customer_email_sent = False
+    support_email_sent = False
+
+    if recipient:
+        customer_email_sent, customer_error = send_order_confirmation_email(settings, recipient, order)
+        if not customer_email_sent:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Unable to send order confirmation email to {recipient}: {customer_error or 'unknown error'}",
+            )
+
+    support_email = getattr(settings, "support_email", None) or getattr(settings, "ses_from_email", None) or getattr(settings, "smtp_from_email", None)
+    if support_email and recipient:
+        support_email_sent, support_error = send_order_placed_support_email(settings, support_email, order, recipient)
+        if not support_email_sent:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Unable to send support order notification: {support_error or 'unknown error'}",
+            )
+
     await db.orders.update_one(
         {"_id": order_obj_id},
         {
@@ -1073,7 +1093,7 @@ async def send_order_confirmation(
             "$push": {
                 "email_logs": {
                     "type": "order_confirmation",
-                    "status": "sent",
+                    "status": "sent" if customer_email_sent or support_email_sent else "pending",
                     "recipient": recipient,
                     "invoice_number": invoice_number,
                     "sent_at": now,
@@ -1085,7 +1105,7 @@ async def send_order_confirmation(
 
     return OrderConfirmationOut(
         success=True,
-        message="Order confirmation recorded.",
+        message="Order confirmation sent successfully.",
         order_id=str(order["_id"]),
         order_number=order["order_number"],
         invoice_url=invoice_url,

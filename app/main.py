@@ -24,6 +24,7 @@ from app.routes import (
     permissions,
     products,
     razorpay_checkout,
+    reviews,
     ritual_showcase,
     roles,
     users,
@@ -127,6 +128,8 @@ app.include_router(products.router)
 app.include_router(addresses.router)
 app.include_router(orders.router)
 app.include_router(orders.router, prefix="/api")
+app.include_router(reviews.router)
+app.include_router(reviews.router, prefix="/api")
 app.include_router(payments.router)
 app.include_router(razorpay_checkout.router)
 app.include_router(aws_sns.router)
